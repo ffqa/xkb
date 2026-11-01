@@ -94,7 +94,8 @@ func (m Model) bodyView(width, contentW, bodyH int) string {
 		return m.overlayView(m.outputTitle, m.outputLines, m.outputScroll, width, bodyH)
 	}
 	if m.archivedView {
-		return m.overlayView("Archived", m.archivedLines(), m.archivedScroll, width, bodyH)
+		title := fmt.Sprintf("Archived (%d)", len(m.cols[store.StatusArchived]))
+		return m.overlayView(title, m.archivedLines(), m.archivedScroll, width, bodyH)
 	}
 	return m.columnsView(contentW, bodyH)
 }
@@ -170,7 +171,7 @@ func (m Model) statusLine(width int) string {
 }
 
 func (m Model) helpLine(width int) string {
-	help := "h/l 切列  j/k 选卡  Enter 详情  t 待办  p 优先级  r 重试  a 归档  : 命令  q 退出"
+	help := "h/l 切列  j/k 选卡  Enter 详情  t 待办  p 优先级  r 重试  A 归档  d 删除  a 归档Done  v 归档视图  : 命令  q 退出"
 	return dimStyle.Render(truncate(help, width))
 }
 

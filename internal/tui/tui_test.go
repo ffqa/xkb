@@ -315,3 +315,101 @@ func TestChineseContentFitsWidth(t *testing.T) {
 		}
 	}
 }
+
+func TestArchiveSelectedAnyStatusAndOverlay(t *testing.T) {
+	m, st, card := newTestModel(t)
+	fin := time.Date(2026, 11, 1, 10, 30, 0, 0, time.Local)
+	card.FinishedAt = &fin
+	card.XIssueIssueID = 42
+	if err := st.UpdateCard(context.Background(), card); err != nil {
+		t.Fatal(err)
+	}
+	m.refresh(context.Background())
+
+	updated, _ := m.Update(key('A'))
+	m = updated.(Model)
+	got, err := st.GetCard(context.Background(), card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusArchived || got.ArchivedAt == nil {
+		t.Fatalf("archive by key failed: %s %v", got.Status, got.ArchivedAt)
+	}
+	if !strings.Contains(m.message, "archived") {
+		t.Fatalf("message %q", m.message)
+	}
+
+	updated, _ = m.Update(key('v'))
+	m = updated.(Model)
+	view := m.View()
+	for _, want := range []string{"Archived (1)", card.ID, "card one", "P2", "完成 11-01 10:30", "归档 ", "issue 42"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("archived overlay missing %q:\n%s", want, view)
+		}
+	}
+	updated, _ = m.Update(key('v'))
+	m = updated.(Model)
+	if m.archivedView || !strings.Contains(m.View(), "Backlog") {
+		t.Fatalf("v did not close the archived overlay")
+	}
+}
+
+func TestDeleteNeedsConfirmation(t *testing.T) {
+	m, st, card := newTestModel(t)
+	updated, _ := m.Update(key('d'))
+	m = updated.(Model)
+	if m.confirmDelete != card.ID {
+		t.Fatalf("confirm state %q", m.confirmDelete)
+	}
+	if _, err := st.GetCard(context.Background(), card.ID); err != nil {
+		t.Fatalf("card deleted before confirmation: %v", err)
+	}
+	updated, _ = m.Update(key('n'))
+	m = updated.(Model)
+	if m.confirmDelete != "" {
+		t.Fatalf("confirm state survived n: %q", m.confirmDelete)
+	}
+	if _, err := st.GetCard(context.Background(), card.ID); err != nil {
+		t.Fatalf("card deleted on n: %v", err)
+	}
+
+	updated, _ = m.Update(key('d'))
+	m = updated.(Model)
+	updated, _ = m.Update(key('y'))
+	m = updated.(Model)
+	if _, err := st.GetCard(context.Background(), card.ID); err == nil {
+		t.Fatal("y did not delete the card")
+	}
+}
+
+func TestReadOnlyBlocksArchiveAndDeleteKeys(t *testing.T) {
+	m, st, card := newTestModel(t)
+	m.SetReadOnly(true)
+	updated, _ := m.Update(key('A'))
+	m = updated.(Model)
+	got, _ := st.GetCard(context.Background(), card.ID)
+	if got.Status != store.StatusBacklog || got.ArchivedAt != nil {
+		t.Fatalf("read-only archived card: %+v", got)
+	}
+	updated, _ = m.Update(key('d'))
+	m = updated.(Model)
+	if m.confirmDelete != "" {
+		t.Fatalf("read-only opened delete confirm: %q", m.confirmDelete)
+	}
+	if _, err := st.GetCard(context.Background(), card.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(m.message, "只读") {
+		t.Fatalf("message %q", m.message)
+	}
+}
+
+func TestHelpLineListsArchiveDeleteKeys(t *testing.T) {
+	m, _, _ := newTestModel(t)
+	help := m.helpLine(400)
+	for _, want := range []string{"A 归档", "d 删除", "a 归档Done", "v 归档视图"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("help line missing %q: %q", want, help)
+		}
+	}
+}
