@@ -17,6 +17,13 @@ import (
 	"github.com/xpier/xkb/internal/store"
 )
 
+func TestMain(m *testing.M) {
+	// Force ANSI so column styling is observable in a non-TTY test run.
+	os.Setenv("NO_COLOR", "")
+	os.Setenv("CLICOLOR_FORCE", "1")
+	os.Exit(m.Run())
+}
+
 func newTestModel(t *testing.T) (Model, *store.Store, *store.Card) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
@@ -46,6 +53,23 @@ func TestViewRendersColumns(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestActiveColumnHighlight(t *testing.T) {
+	m, _, _ := newTestModel(t)
+	view := m.View()
+	if strings.Count(view, "▸") != 1 || !strings.Contains(view, "\x1b[1;36m▸ Backlog (1)\x1b[0m") {
+		t.Fatalf("active column marker/style:\n%q", view)
+	}
+	if !strings.Contains(view, "\x1b[2mTodo (0)\x1b[0m") {
+		t.Fatalf("inactive column title not dim:\n%q", view)
+	}
+	updated, _ := m.Update(key('l'))
+	m = updated.(Model)
+	view = m.View()
+	if strings.Count(view, "▸") != 1 || !strings.Contains(view, "▸ Todo (0)") {
+		t.Fatalf("marker did not follow active column:\n%q", view)
 	}
 }
 

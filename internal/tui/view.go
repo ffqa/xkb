@@ -20,6 +20,8 @@ var (
 	headerStyle   = lipgloss.NewStyle().Bold(true)
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
 	columnStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	accentStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
+	accentColumn  = columnStyle.BorderForeground(lipgloss.Color("6"))
 	overlayStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
 	dimStyle      = lipgloss.NewStyle().Faint(true)
 )
@@ -169,7 +171,11 @@ func (m Model) columnsView(contentW, bodyH int) string {
 			_, max := m.slots()
 			title = fmt.Sprintf("%s (%d/%d)", columnTitles[i], len(cards), max)
 		}
-		lines := []string{headerStyle.Render(truncate(title, contentW))}
+		titleLine, colStyle := dimStyle.Render(truncate(title, contentW)), columnStyle
+		if i == m.col {
+			titleLine, colStyle = accentStyle.Render(truncate("▸ "+title, contentW)), accentColumn
+		}
+		lines := []string{titleLine}
 		// Rich cards use four lines; fall back to one line on very short screens.
 		const blockHeight = 4
 		avail := contentH - 1
@@ -204,7 +210,7 @@ func (m Model) columnsView(contentW, bodyH int) string {
 		if len(cards) == 0 {
 			lines = append(lines, dimStyle.Render("-"))
 		}
-		cols = append(cols, columnStyle.Width(contentW+2).Height(contentH).Render(strings.Join(lines, "\n")))
+		cols = append(cols, colStyle.Width(contentW+2).Height(contentH).Render(strings.Join(lines, "\n")))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, cols...)
 }
