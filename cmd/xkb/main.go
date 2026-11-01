@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/xpier/xkb/internal/config"
 	"github.com/xpier/xkb/internal/engine"
 	"github.com/xpier/xkb/internal/mcp"
+	"github.com/xpier/xkb/internal/server"
 	"github.com/xpier/xkb/internal/store"
 	"github.com/xpier/xkb/internal/tui"
 	"github.com/xpier/xkb/internal/xissue"
@@ -64,10 +66,12 @@ func run(args []string) error {
 		return nil
 	case "spec", "add", "ready", "list", "show", "retry", "archive":
 		return cli.Run(ctx, st, eng, args, os.Stdout)
+	case "server":
+		return cmdServer(ctx, cfg, eng, args[1:])
 	case "mcp":
 		return cmdMCP(ctx, st, args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (want daemon, spec, add, ready, list, show, retry, archive, mcp)", args[0])
+		return fmt.Errorf("unknown command %q (want daemon, server, spec, add, ready, list, show, retry, archive, mcp)", args[0])
 	}
 }
 
@@ -101,6 +105,42 @@ func runTUI(st *store.Store, cfg *config.Config) error {
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err = p.Run()
 	return err
+}
+
+// cmdServer takes the engine lock, runs the scheduler, and serves it over HTTP
+// until a signal cancels ctx.
+func cmdServer(ctx context.Context, cfg *config.Config, eng *engine.Engine, args []string) error {
+	fs := flag.NewFlagSet("server", flag.ExitOnError)
+	port := fs.Int("port", cfg.ServerPort, "loopback HTTP port")
+	fs.Parse(args)
+	cfg.ServerPort = *port
+
+	lock, err := engine.AcquireLock(engineLockPath())
+	if errors.Is(err, engine.ErrLocked) {
+		return fmt.Errorf("engine.lock 已被占用：已有 daemon、server 或 TUI 在运行")
+	}
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
+	sctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	srv := server.New(eng)
+	ln, err := srv.Listen()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("xkb server listening on http://%s; db: %s\n", ln.Addr(), cfg.DBPath)
+	return serve(sctx, eng, srv, ln)
+}
+
+// serve runs the scheduler alongside the HTTP server; both stop when ctx is
+// cancelled.
+func serve(ctx context.Context, eng *engine.Engine, srv *server.Server, ln net.Listener) error {
+	go eng.Run(ctx)
+	return srv.Serve(ctx, ln)
 }
 
 func cmdMCP(ctx context.Context, st *store.Store, args []string) error {
