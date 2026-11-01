@@ -44,6 +44,8 @@ func Run(ctx context.Context, st *store.Store, eng *engine.Engine, args []string
 		return Retry(ctx, st, args[1:], out)
 	case "archive":
 		return Archive(ctx, eng, args[1:], out)
+	case "logs":
+		return Logs(ctx, st, eng, args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -361,4 +363,64 @@ func Archive(ctx context.Context, eng *engine.Engine, args []string, out io.Writ
 	}
 	fmt.Fprintf(out, "archived %d card(s)\n", n)
 	return nil
+}
+
+// Logs prints the recorded xissue agent events for a card's current run.
+func Logs(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
+	fs.SetOutput(out)
+	tail := fs.Int("tail", 50, "number of recent events")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: xkb logs <card-id> [--tail N] [--json]")
+	}
+	if eng == nil || eng.Client == nil {
+		return fmt.Errorf("xissue client unavailable")
+	}
+	card, err := st.GetCard(ctx, fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	if card.XIssueRunID == 0 {
+		return fmt.Errorf("card %s has no active xissue run", card.ID)
+	}
+	events, err := eng.Client.RunEvents(ctx, card.XIssueRunID)
+	if err != nil {
+		return err
+	}
+	if *tail > 0 && len(events) > *tail {
+		events = events[len(events)-*tail:]
+	}
+	if *asJSON {
+		return printJSON(out, events)
+	}
+	fmt.Fprintf(out, "card %s run %d: %d events\n", card.ID, card.XIssueRunID, len(events))
+	for _, ev := range events {
+		fmt.Fprintf(out, "%s %-16s %s\n", ev.CreatedAt.Local().Format("15:04:05"), ev.Type, summarizeEvent(ev.Data))
+	}
+	return nil
+}
+
+func summarizeEvent(data json.RawMessage) string {
+	var m map[string]any
+	if json.Unmarshal(data, &m) == nil {
+		for _, key := range []string{"text", "message", "command", "title", "name"} {
+			if v, ok := m[key].(string); ok && v != "" {
+				return truncateLine(v, 180)
+			}
+		}
+	}
+	return truncateLine(string(data), 180)
+}
+
+func truncateLine(s string, n int) string {
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", " ")
+	r := []rune(s)
+	if len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
 }

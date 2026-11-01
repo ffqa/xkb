@@ -412,3 +412,26 @@ func (c *Client) ArchiveIssue(ctx context.Context, issueID int64) error {
 	_, err := c.do(ctx, http.MethodPatch, fmt.Sprintf("/api/issues/%d", issueID), map[string]any{"archived": true})
 	return err
 }
+
+// RunEvent is one xissue ACP event (tool call, message, status, usage, ...).
+type RunEvent struct {
+	ID        int64           `json:"id"`
+	RunID     int64           `json:"runId"`
+	Seq       int64           `json:"seq"`
+	Type      string          `json:"type"`
+	Data      json.RawMessage `json:"data"`
+	CreatedAt time.Time       `json:"createdAt"`
+}
+
+// RunEvents returns the recorded agent event stream for a run.
+func (c *Client) RunEvents(ctx context.Context, runID int64) ([]RunEvent, error) {
+	data, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/runs/%d/events", runID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var events []RunEvent
+	if err := json.Unmarshal(data, &events); err != nil {
+		return nil, err
+	}
+	return events, nil
+}

@@ -279,3 +279,19 @@ func TestChangedStatsIncludesUntracked(t *testing.T) {
 		t.Fatal("total lines is zero")
 	}
 }
+
+func TestRunEvents(t *testing.T) {
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "runId": 5, "seq": 1, "type": "tool_call", "data": map[string]any{"text": "go test"}},
+			{"id": 2, "runId": 5, "seq": 2, "type": "status", "data": map[string]any{"status": "completed"}},
+		})
+	}))
+	events, err := client.RunEvents(context.Background(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Type != "tool_call" || events[1].Seq != 2 {
+		t.Fatalf("events: %+v", events)
+	}
+}

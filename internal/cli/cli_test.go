@@ -3,11 +3,17 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/xpier/xkb/internal/config"
+	"github.com/xpier/xkb/internal/engine"
 	"github.com/xpier/xkb/internal/store"
+	"github.com/xpier/xkb/internal/xissue"
 )
 
 func TestShowAcceptsFlagAfterID(t *testing.T) {
@@ -66,5 +72,35 @@ func TestSplitList(t *testing.T) {
 	got := SplitList(" a/ , b.go ,, ")
 	if len(got) != 2 || got[0] != "a/" || got[1] != "b.go" {
 		t.Fatalf("split: %#v", got)
+	}
+}
+
+func TestLogsPrintsAgentEvents(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.CreateCard(context.Background(), &store.Card{
+		ProjectPath: t.TempDir(), Title: "card", Touches: []string{"a"},
+		Status: store.StatusRunning, XIssueRunID: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "runId": 5, "seq": 1, "type": "tool_call", "data": map[string]any{"text": "go test ./..."}},
+		})
+	}))
+	defer srv.Close()
+	cfg := &config.Config{MaxConcurrent: 5, SmallExecAgent: config.AgentModel{Agent: "omp"}}
+	eng := engine.New(st, xissue.New(srv.URL, "", t.TempDir()), cfg)
+	var out bytes.Buffer
+	if err := Run(context.Background(), st, eng, []string{"logs", card.ID}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "tool_call") || !strings.Contains(out.String(), "go test") {
+		t.Fatalf("logs output: %s", out.String())
 	}
 }

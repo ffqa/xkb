@@ -177,6 +177,7 @@ func commandHelp() []string {
 		"  ready <card-id>...",
 		"  retry <card-id>...",
 		"  archive [--all-done]",
+		"  logs <card-id> [--tail N]",
 		"  spec new --project <dir> --title <t> --file <spec.md>",
 		"  help",
 	}

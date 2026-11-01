@@ -28,6 +28,16 @@ class Xkb < Formula
     bin.install "xkb"
   end
 
+
+  service do
+    run [opt_bin/"xkb", "server", "--port", "7790"]
+    keep_alive true
+    working_dir Dir.home
+    environment_variables XKB_SERVICE: "1"
+    log_path var/"log/xkb.log"
+    error_log_path var/"log/xkb.log"
+  end
+
   def caveats
     <<~EOS
       启动常驻调度与 HTTP/SSE 服务:
