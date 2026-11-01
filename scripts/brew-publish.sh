@@ -131,5 +131,9 @@ git config user.name "xkb-release"
 git config user.email "xkb-release@localhost"
 git add Formula/xkb.rb
 git commit -m "xkb ${VERSION}" || true
-git push
+if [[ -n "${GH_TOKEN:-}" ]]; then
+  git push "https://x-access-token:${GH_TOKEN}@github.com/${GH_USER}/${TAP_REPO}.git" HEAD:main
+else
+  git push
+fi
 echo "published xkb ${VERSION} to ${GH_USER}/${TAP_REPO}"
