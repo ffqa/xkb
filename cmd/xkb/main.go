@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/xpier/xkb/internal/server"
 	"github.com/xpier/xkb/internal/store"
 	"github.com/xpier/xkb/internal/tui"
+	"github.com/xpier/xkb/internal/version"
 	"github.com/xpier/xkb/internal/xissue"
 )
 
@@ -63,16 +65,22 @@ func run(args []string) error {
 		sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		fmt.Println("xkb daemon running; db:", cfg.DBPath)
+		startAutoUpdate(sctx, cfg)
 		eng.Run(sctx)
 		return nil
 	case "spec", "add", "ready", "list", "show", "retry", "archive":
 		return cli.Run(ctx, st, eng, args, os.Stdout)
 	case "server":
 		return cmdServer(ctx, cfg, eng, args[1:])
+	case "version", "--version", "-version":
+		fmt.Printf("xkb %s (%s/%s)\n", version.Version, runtime.GOOS, runtime.GOARCH)
+		return nil
+	case "update":
+		return cmdUpdate(args[1:])
 	case "mcp":
 		return cmdMCP(ctx, st, args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (want daemon, server, spec, add, ready, list, show, retry, archive, mcp)", args[0])
+		return fmt.Errorf("unknown command %q (want daemon, server, spec, add, ready, list, show, retry, archive, mcp, update, version)", args[0])
 	}
 }
 
@@ -127,6 +135,7 @@ func cmdServer(ctx context.Context, cfg *config.Config, eng *engine.Engine, args
 
 	sctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	startAutoUpdate(sctx, cfg)
 
 	srv := server.New(eng)
 	ln, err := srv.Listen()

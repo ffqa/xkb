@@ -15,7 +15,7 @@ func TestLoadCreatesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxConcurrent != 5 || cfg.DoneMaxCount != 20 || cfg.DoneTTLHours != 24 || cfg.RunTimeoutMinutes != 30 {
+	if cfg.MaxConcurrent != 5 || cfg.DoneMaxCount != 20 || cfg.DoneTTLHours != 24 || cfg.RunTimeoutMinutes != 30 || !cfg.AutoUpdate {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 	if cfg.SmallExecAgent.Agent != "omp" || cfg.LargeExecAgent.Agent != "devin" {

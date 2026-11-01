@@ -32,6 +32,7 @@ type Config struct {
 	VerifyTimeoutSeconds int        `yaml:"verifyTimeoutSeconds"`
 	ReviewTimeoutSeconds int        `yaml:"reviewTimeoutSeconds"`
 	RunTimeoutMinutes    int        `yaml:"runTimeoutMinutes"`
+	AutoUpdate           bool       `yaml:"autoUpdate"`
 	ServerPort           int        `yaml:"serverPort"`
 	ServerURL            string     `yaml:"serverURL"`
 }
@@ -67,6 +68,7 @@ func Default() *Config {
 		RunTimeoutMinutes:    30,
 		ServerPort:           7790,
 		ServerURL:            "http://127.0.0.1:7790",
+		AutoUpdate:           true,
 	}
 }
 
