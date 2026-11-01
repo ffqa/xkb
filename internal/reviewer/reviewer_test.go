@@ -158,33 +158,26 @@ func TestDevinReviewUsesReadOnlyCopy(t *testing.T) {
 	}
 }
 
-func TestDevinReviewDetectsProjectMutation(t *testing.T) {
+func TestDevinReviewDetectsRealWorktreeMutation(t *testing.T) {
 	worktree := t.TempDir()
 	runGit(t, worktree, "init", "-b", "main")
 	os.WriteFile(filepath.Join(worktree, "a.go"), []byte("package a\n"), 0o644)
 	runGit(t, worktree, "add", ".")
 	runGit(t, worktree, "commit", "-m", "init")
 
-	project := t.TempDir()
-	runGit(t, project, "init", "-b", "main")
-	os.WriteFile(filepath.Join(project, "p.go"), []byte("package p\n"), 0o644)
-	runGit(t, project, "add", ".")
-	runGit(t, project, "commit", "-m", "init")
-
 	r := New(0)
 	r.Exec = func(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
-		os.WriteFile(filepath.Join(project, "hack.go"), []byte("x"), 0o644)
-		runGit(t, project, "add", ".")
-		runGit(t, project, "commit", "-m", "hacked")
+		// Devin runs in a copy, but simulate an out-of-copy write.
+		os.WriteFile(filepath.Join(worktree, "a.go"), []byte("changed\n"), 0o644)
 		return `{"verdict":"PASS"}`, nil
 	}
 	_, err := r.RunReadOnlyReview(context.Background(), Request{
-		Card:         &store.Card{ID: "xkb-1", ProjectPath: project},
+		Card:         &store.Card{ID: "xkb-1", ProjectPath: worktree},
 		Reviewer:     config.AgentModel{Agent: "devin"},
 		WorktreePath: worktree,
 	})
 	if err == nil || !strings.Contains(err.Error(), "modified") {
-		t.Fatalf("expected repo mutation error, got %v", err)
+		t.Fatalf("expected worktree mutation error, got %v", err)
 	}
 }
 

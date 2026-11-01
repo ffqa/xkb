@@ -136,20 +136,19 @@ func (r *Reviewer) RunReadOnlyReview(ctx context.Context, req Request) (*Result,
 	}
 	defer cleanup()
 
-	beforeWorktree := repoState(ctx, req.WorktreePath)
-	beforeProject := repoState(ctx, req.Card.ProjectPath)
+	before := repoState(ctx, req.WorktreePath)
 	cctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 	out, err := r.Exec(cctx, reviewDir, env, name, args...)
 	if err != nil {
 		return nil, err
 	}
-	afterWorktree := repoState(ctx, req.WorktreePath)
-	afterProject := repoState(ctx, req.Card.ProjectPath)
-	// shortcut: writes outside the worktree and project repo are not detected;
-	// add an OS sandbox if reviewers must be fully confined.
-	if beforeWorktree != afterWorktree || beforeProject != afterProject {
-		return nil, fmt.Errorf("reviewer modified the repository (git state changed)")
+	after := repoState(ctx, req.WorktreePath)
+	// shortcut: writes outside the worktree are not detected. Devin runs in a
+	// read-only copy and omp/opencode have tools disabled, so the worktree
+	// check covers the paths that matter without racing concurrent merges.
+	if before != after {
+		return nil, fmt.Errorf("reviewer modified the worktree (git state changed)")
 	}
 	return parseResult(out)
 }
