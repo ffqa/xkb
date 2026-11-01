@@ -33,11 +33,11 @@ func Run(ctx context.Context, st *store.Store, eng *engine.Engine, args []string
 		}
 		return SpecNew(ctx, st, args[2:], out)
 	case "add":
-		return Add(ctx, st, eng, args[1:], out)
+		return add(ctx, st, eng, args[1:], out)
 	case "ready":
-		return Ready(ctx, st, eng, args[1:], out)
+		return ready(ctx, st, eng, args[1:], out)
 	case "list":
-		return List(ctx, st, eng, args[1:], out)
+		return list(ctx, st, eng, args[1:], out)
 	case "show":
 		return Show(ctx, st, args[1:], out)
 	case "retry":
@@ -99,8 +99,12 @@ func SpecNew(ctx context.Context, st *store.Store, args []string, out io.Writer)
 	return nil
 }
 
-// Add creates a backlog card.
-func Add(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
+// Add creates a backlog card, writing SQLite directly.
+func Add(ctx context.Context, st *store.Store, args []string, out io.Writer) error {
+	return add(ctx, st, nil, args, out)
+}
+
+func add(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fs.SetOutput(out)
 	project := fs.String("project", "", "local git repository path")
@@ -157,8 +161,12 @@ func Add(ctx context.Context, st *store.Store, eng *engine.Engine, args []string
 	return nil
 }
 
-// Ready validates cards and moves them to todo.
-func Ready(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
+// Ready validates cards and moves them to todo, writing SQLite directly.
+func Ready(ctx context.Context, st *store.Store, args []string, out io.Writer) error {
+	return ready(ctx, st, nil, args, out)
+}
+
+func ready(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: xkb ready <card-id>...")
 	}
@@ -177,7 +185,8 @@ func Ready(ctx context.Context, st *store.Store, eng *engine.Engine, args []stri
 				failed++
 				continue
 			}
-			online = false // server build has no write routes; finish locally
+			// This id's route is missing or the card is unknown to the server:
+			// handle it locally but keep the other ids on HTTP.
 		}
 		card, err := st.GetCard(ctx, id)
 		if err != nil {
@@ -209,8 +218,12 @@ func Ready(ctx context.Context, st *store.Store, eng *engine.Engine, args []stri
 	return nil
 }
 
-// List prints cards.
-func List(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
+// List prints cards, reading SQLite directly.
+func List(ctx context.Context, st *store.Store, args []string, out io.Writer) error {
+	return list(ctx, st, nil, args, out)
+}
+
+func list(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(out)
 	status := fs.String("status", "", "filter by status")

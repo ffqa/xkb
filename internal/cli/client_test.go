@@ -220,3 +220,87 @@ func TestReadyReportsServerRejection(t *testing.T) {
 		t.Fatalf("ready output: %q", out.String())
 	}
 }
+
+func TestAddToleratesMissingEcho(t *testing.T) {
+	project := t.TempDir()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", healthOK)
+	mux.HandleFunc("POST /api/cards", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent) // stored, but no body
+	})
+	mux.HandleFunc("GET /api/cards", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]*store.Card{{ID: "xkb-555", ProjectPath: project, Title: "echo-less"}})
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	st := openStore(t)
+	var out bytes.Buffer
+	if err := Run(context.Background(), st, engineFor(st, ts.URL), []string{"add", "--project", project, "--title", "echo-less"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out.String()) != "xkb-555" {
+		t.Fatalf("add output: %q", out.String())
+	}
+	cards, err := st.ListCards(context.Background(), store.CardFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != 0 {
+		t.Fatalf("add duplicated the committed card in SQLite: %d", len(cards))
+	}
+}
+
+func TestReadyKeepsHTTPAfterUnroutedID(t *testing.T) {
+	var readyHits int
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", healthOK)
+	mux.HandleFunc("POST /api/cards/{id}/ready", func(w http.ResponseWriter, r *http.Request) {
+		readyHits++
+		if r.PathValue("id") == "xkb-001" {
+			http.NotFound(w, r) // unknown to the server, but the route exists
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	st := openStore(t)
+	project := t.TempDir()
+	var ids []string
+	for _, title := range []string{"first", "second"} {
+		card, err := st.CreateCard(context.Background(), &store.Card{
+			ProjectPath: project, Title: title, Priority: "P2", Size: "small",
+			Touches: []string{"a/"}, VerifyCmd: "true", Goal: "g", OutOfScope: "o", Acceptance: "a",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, card.ID)
+	}
+	var out bytes.Buffer
+	if err := Run(context.Background(), st, engineFor(st, ts.URL), []string{"ready", ids[0], ids[1]}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != ids[0]+": todo\n"+ids[1]+": todo\n" {
+		t.Fatalf("ready output: %q", out.String())
+	}
+	if readyHits != 2 {
+		t.Fatalf("ready requests = %d, want both ids to try HTTP", readyHits)
+	}
+	second, err := st.GetCard(context.Background(), ids[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != store.StatusBacklog {
+		t.Fatalf("second card written locally: status = %s", second.Status)
+	}
+	first, err := st.GetCard(context.Background(), ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != store.StatusTodo {
+		t.Fatalf("first card not handled locally: status = %s", first.Status)
+	}
+}

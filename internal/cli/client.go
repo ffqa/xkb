@@ -122,14 +122,39 @@ func (c *client) createCard(ctx context.Context, card *store.Card) (*store.Card,
 	if unrouted(code) {
 		return nil, errUnrouted
 	}
-	if code != http.StatusOK && code != http.StatusCreated {
+	if code < 200 || code > 299 {
 		return nil, statusErr(code, data)
 	}
-	var created store.Card
-	if err := json.Unmarshal(data, &created); err != nil {
-		return nil, fmt.Errorf("decode created card: %w", err)
+	// The write is committed from here on, so a missing echo must never turn
+	// into an error a user would retry: look the card up instead.
+	if len(bytes.TrimSpace(data)) > 0 {
+		var created store.Card
+		if err := json.Unmarshal(data, &created); err == nil && created.ID != "" {
+			return &created, nil
+		}
 	}
-	return &created, nil
+	return c.findCreated(ctx, card)
+}
+
+// findCreated recovers the id of a card the server stored without echoing it.
+func (c *client) findCreated(ctx context.Context, want *store.Card) (*store.Card, error) {
+	known, ok := c.listCards(ctx)
+	if ok {
+		var found *store.Card
+		for _, card := range known {
+			if card.ProjectPath != want.ProjectPath || card.Title != want.Title {
+				continue
+			}
+			if found == nil || card.CreatedAt.After(found.CreatedAt) ||
+				(card.CreatedAt.Equal(found.CreatedAt) && card.ID > found.ID) {
+				found = card
+			}
+		}
+		if found != nil {
+			return found, nil
+		}
+	}
+	return nil, fmt.Errorf("card was created on the server but its id was not returned; check `xkb list` before adding it again")
 }
 
 // readyCard asks the server to run the todo gate and move the card to todo.
@@ -142,7 +167,7 @@ func (c *client) readyCard(ctx context.Context, id string) error {
 	if unrouted(code) {
 		return errUnrouted
 	}
-	if code != http.StatusOK && code != http.StatusNoContent {
+	if code < 200 || code > 299 {
 		return statusErr(code, data)
 	}
 	return nil
