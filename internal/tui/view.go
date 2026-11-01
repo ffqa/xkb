@@ -3,7 +3,9 @@ package tui
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -91,7 +93,41 @@ func (m Model) bodyView(width, contentW, bodyH int) string {
 	if m.output {
 		return m.overlayView(m.outputTitle, m.outputLines, m.outputScroll, width, bodyH)
 	}
+	if m.archivedView {
+		return m.overlayView("Archived", m.archivedLines(), m.archivedScroll, width, bodyH)
+	}
 	return m.columnsView(contentW, bodyH)
+}
+
+// archivedLines lists archived cards newest first with project, id, title,
+// priority, finish/archive times and the xissue issue id.
+func (m Model) archivedLines() []string {
+	cards := append([]*store.Card(nil), m.cols[store.StatusArchived]...)
+	if len(cards) == 0 {
+		return []string{"暂无归档卡片"}
+	}
+	sort.SliceStable(cards, func(i, j int) bool { return archivedTime(cards[i]).After(archivedTime(cards[j])) })
+	lines := make([]string, 0, len(cards))
+	for _, c := range cards {
+		lines = append(lines, fmt.Sprintf("%s  %s  %s  %s  完成 %s  归档 %s  issue %d",
+			projectName(c.ProjectPath), c.ID, c.Title, c.Priority,
+			stamp(c.FinishedAt), stamp(c.ArchivedAt), c.XIssueIssueID))
+	}
+	return lines
+}
+
+func archivedTime(c *store.Card) time.Time {
+	if c.ArchivedAt != nil {
+		return *c.ArchivedAt
+	}
+	return time.Time{}
+}
+
+func stamp(t *time.Time) string {
+	if t == nil {
+		return "—"
+	}
+	return t.Local().Format("01-02 15:04")
 }
 
 func (m Model) cardID() string {
@@ -282,10 +318,7 @@ func summaryOf(c *store.Card) string {
 }
 
 func finishLabel(c *store.Card) string {
-	if c.FinishedAt != nil {
-		return "完成 " + c.FinishedAt.Local().Format("01-02 15:04")
-	}
-	return "完成 —"
+	return "完成 " + stamp(c.FinishedAt)
 }
 
 func (m Model) overlayView(title string, lines []string, scroll, width, bodyH int) string {

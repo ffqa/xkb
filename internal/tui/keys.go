@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/xpier/xkb/internal/cli"
 	"github.com/xpier/xkb/internal/gate"
 	"github.com/xpier/xkb/internal/store"
 )
@@ -18,11 +20,25 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.handleInputKey(msg)
 		return m, nil
 	}
-	if m.detail || m.output {
+	if m.confirmDelete != "" {
+		id := m.confirmDelete
+		m.confirmDelete = ""
+		if key == "y" {
+			m.deleteCard(id)
+		} else {
+			m.message = "已取消删除"
+		}
+		return m, nil
+	}
+	if m.detail || m.output || m.archivedView {
 		switch key {
-		case "esc", "enter", " ":
+		case "esc", "enter", " ", "v":
+			if key == "v" && !m.archivedView {
+				break
+			}
 			m.detail = false
 			m.output = false
+			m.archivedView = false
 			m.reviews = nil
 			m.outputLines = nil
 		case "q", "ctrl+c":
@@ -62,10 +78,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if card := m.selected(); card != nil {
 			m.detail = true
 			m.output = false
+			m.archivedView = false
 			m.detailScroll = 0
 			m.reviews, _ = m.Store.ListReviewRuns(context.Background(), card.ID)
 		}
-	case "t", "p", "r", "a":
+	case "v":
+		m.archivedView = !m.archivedView
+		m.archivedScroll = 0
+		m.detail = false
+		m.output = false
+	case "t", "p", "r", "a", "A", "d":
 		if m.readOnly {
 			m.message = "只读模式：另一个 xkb 引擎正在运行"
 			return m, nil
@@ -79,6 +101,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.retryBlocked()
 		case "a":
 			m.archiveDone()
+		case "A":
+			m.archiveSelected()
+		case "d":
+			if card := m.selected(); card != nil {
+				m.confirmDelete = card.ID
+				m.message = fmt.Sprintf("删除 %s %s? (y/N)", card.ID, card.Title)
+			}
 		}
 	}
 	return m, nil
@@ -155,6 +184,7 @@ func (m *Model) runCommand(line string) {
 func (m *Model) showOutput(title string, lines []string) {
 	m.output = true
 	m.detail = false
+	m.archivedView = false
 	m.outputTitle = title
 	m.outputLines = lines
 	m.outputScroll = 0
@@ -185,30 +215,26 @@ func commandHelp() []string {
 }
 
 func (m *Model) scrollOverlay(delta int) {
-	total := len(m.outputLines)
-	if m.detail {
-		total = len(m.detailLines())
+	var total int
+	var cursor *int
+	switch {
+	case m.detail:
+		total, cursor = len(m.detailLines()), &m.detailScroll
+	case m.archivedView:
+		total, cursor = len(m.archivedLines()), &m.archivedScroll
+	default:
+		total, cursor = len(m.outputLines), &m.outputScroll
 	}
 	max := total - m.overlayContentHeight()
 	if max < 0 {
 		max = 0
 	}
-	if m.detail {
-		m.detailScroll += delta
-		if m.detailScroll > max {
-			m.detailScroll = max
-		}
-		if m.detailScroll < 0 {
-			m.detailScroll = 0
-		}
-	} else {
-		m.outputScroll += delta
-		if m.outputScroll > max {
-			m.outputScroll = max
-		}
-		if m.outputScroll < 0 {
-			m.outputScroll = 0
-		}
+	*cursor += delta
+	if *cursor > max {
+		*cursor = max
+	}
+	if *cursor < 0 {
+		*cursor = 0
 	}
 }
 
@@ -321,5 +347,33 @@ func (m *Model) archiveDone() {
 		return
 	}
 	m.message = fmt.Sprintf("已归档 %d 张 Done 卡片", n)
+	m.refresh(context.Background())
+}
+
+// archiveSelected archives the selected card whatever its status, reusing the
+// CLI path so the in-flight xissue run is cancelled first.
+func (m *Model) archiveSelected() {
+	card := m.selected()
+	if card == nil {
+		m.message = "没有选中的卡片"
+		return
+	}
+	var out bytes.Buffer
+	if err := cli.Archive(context.Background(), m.Store, m.Engine, []string{card.ID}, &out); err != nil {
+		m.message = "归档失败: " + err.Error()
+		return
+	}
+	m.message = strings.TrimSpace(out.String())
+	m.refresh(context.Background())
+}
+
+// deleteCard removes the card and its review evidence after confirmation.
+func (m *Model) deleteCard(id string) {
+	var out bytes.Buffer
+	if err := cli.Delete(context.Background(), m.Store, m.Engine, []string{id}, &out); err != nil {
+		m.message = "删除失败: " + err.Error()
+		return
+	}
+	m.message = strings.TrimSpace(out.String())
 	m.refresh(context.Background())
 }

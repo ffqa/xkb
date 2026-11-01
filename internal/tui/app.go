@@ -54,6 +54,10 @@ type Model struct {
 	detail   bool
 	readOnly bool
 
+	archivedView   bool
+	archivedScroll int
+	confirmDelete  string
+
 	detailScroll int
 	output       bool
 	outputTitle  string
