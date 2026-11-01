@@ -69,3 +69,18 @@ func TestAutoUpdateEligible(t *testing.T) {
 		t.Fatal("repo build must not auto-update")
 	}
 }
+
+func TestIsBrewInstallByPath(t *testing.T) {
+	cases := map[string]bool{
+		"/opt/homebrew/Cellar/xkb/0.1.0/bin/xkb":              true,
+		"/home/linuxbrew/.linuxbrew/Cellar/xkb/0.1.0/bin/xkb": true,
+		"/usr/local/Cellar/xkb/0.1.0/bin/xkb":                 true,
+		"/Users/gouki/xkb-update-test/xkb":                    false,
+		"/Users/gouki/server/wwwroot/xpier/xkb/bin/xkb-next4": false,
+	}
+	for path, want := range cases {
+		if got := isBrewInstall(path); got != want {
+			t.Fatalf("isBrewInstall(%q)=%v want %v", path, got, want)
+		}
+	}
+}

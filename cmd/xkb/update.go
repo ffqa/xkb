@@ -188,17 +188,9 @@ func localBinPath() string {
 
 func isBrewInstall(exe string) bool {
 	clean := filepath.ToSlash(exe)
-	if strings.Contains(clean, "/Cellar/xkb/") || strings.Contains(clean, "/opt/homebrew/opt/xkb/") {
-		return true
-	}
-	if _, err := exec.LookPath("brew"); err == nil {
-		for _, formula := range []string{"ffqa/tap/xkb", "xkb"} {
-			if out, err := exec.Command("brew", "list", "--formula", formula).CombinedOutput(); err == nil && strings.Contains(string(out), "xkb") {
-				return true
-			}
-		}
-	}
-	return false
+	return strings.Contains(clean, "/Cellar/xkb/") ||
+		strings.Contains(clean, "/opt/homebrew/opt/xkb/") ||
+		strings.Contains(clean, "/usr/local/Cellar/xkb/")
 }
 
 func downloadFile(ctx context.Context, url string) (string, error) {
