@@ -47,6 +47,8 @@ func Run(ctx context.Context, st *store.Store, eng *engine.Engine, args []string
 		return Archive(ctx, eng, args[1:], out)
 	case "logs":
 		return Logs(ctx, st, eng, args[1:], out)
+	case "cancel":
+		return Cancel(ctx, st, eng, args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -435,4 +437,31 @@ func truncateLine(s string, n int) string {
 		return string(r[:n]) + "…"
 	}
 	return s
+}
+
+// Cancel stops a card's active xissue run and blocks it for manual handling.
+func Cancel(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: xkb cancel <card-id>")
+	}
+	card, err := st.GetCard(ctx, args[0])
+	if err != nil {
+		return err
+	}
+	if eng == nil || eng.Client == nil {
+		return fmt.Errorf("xissue client unavailable")
+	}
+	if card.XIssueRunID != 0 {
+		if err := eng.Client.CancelRun(ctx, card.XIssueRunID); err != nil {
+			fmt.Fprintf(out, "cancel run %d: %v\n", card.XIssueRunID, err)
+		}
+	}
+	card.Status = store.StatusBlocked
+	card.LastError = "已手动取消"
+	card.StartedAt = nil
+	if err := st.UpdateCard(ctx, card); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s: blocked (manual cancel)\n", card.ID)
+	return nil
 }

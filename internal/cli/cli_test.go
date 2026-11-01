@@ -104,3 +104,41 @@ func TestLogsPrintsAgentEvents(t *testing.T) {
 		t.Fatalf("logs output: %s", out.String())
 	}
 }
+
+func TestCancelStopsRunAndBlocks(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.CreateCard(context.Background(), &store.Card{
+		ProjectPath: t.TempDir(), Title: "card", Touches: []string{"a"},
+		Status: store.StatusRunning, XIssueRunID: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/runs/5/cancel" {
+			called = true
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	cfg := &config.Config{MaxConcurrent: 5, SmallExecAgent: config.AgentModel{Agent: "omp"}}
+	eng := engine.New(st, xissue.New(srv.URL, "", t.TempDir()), cfg)
+	var out bytes.Buffer
+	if err := Run(context.Background(), st, eng, []string{"cancel", card.ID}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("cancel API not called")
+	}
+	got, _ := st.GetCard(context.Background(), card.ID)
+	if got.Status != store.StatusBlocked || got.LastError != "已手动取消" {
+		t.Fatalf("card: %+v", got)
+	}
+}
