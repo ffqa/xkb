@@ -43,6 +43,8 @@ type Server struct {
 	mu     sync.Mutex
 	subs   map[chan Event]struct{}
 	status map[string]string
+
+	pollMu sync.Mutex
 }
 
 // New builds a server backed by eng.
@@ -124,7 +126,8 @@ func (s *Server) unsubscribe(ch chan Event) {
 	s.mu.Unlock()
 }
 
-func (s *Server) publish(ev Event) {
+// Publish broadcasts one event to every SSE subscriber.
+func (s *Server) Publish(ev Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for ch := range s.subs {
@@ -139,6 +142,9 @@ func (s *Server) publish(ev Event) {
 // Poll reads the cards and broadcasts the transitions since the previous poll.
 // Cards seen for the first time are recorded without an event.
 func (s *Server) Poll(ctx context.Context) error {
+	s.pollMu.Lock()
+	defer s.pollMu.Unlock()
+
 	cards, err := s.Engine.Store.ListCards(ctx, store.CardFilter{})
 	if err != nil {
 		return err
@@ -157,7 +163,7 @@ func (s *Server) Poll(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 	for _, ev := range events {
-		s.publish(ev)
+		s.Publish(ev)
 	}
 	return nil
 }

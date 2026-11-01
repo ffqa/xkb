@@ -106,16 +106,8 @@ func TestEventsBroadcastTransitions(t *testing.T) {
 
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/api/events")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
-		t.Fatalf("content type: %s", ct)
-	}
-	br := bufio.NewReader(resp.Body)
+	br, closeEvents := openEvents(t, ts.URL)
+	defer closeEvents()
 
 	next := func(status, want string) {
 		t.Helper()
@@ -128,11 +120,43 @@ func TestEventsBroadcastTransitions(t *testing.T) {
 			t.Fatalf("after %s: got %+v, want %s", status, got, want)
 		}
 	}
-	waitForComment(t, br)
 	next(store.StatusRunning, EventDispatched)
 	next(store.StatusReview, EventReviewing)
 	next(store.StatusBlocked, EventBlocked)
 	next(store.StatusDone, EventDone)
+}
+
+func TestPublishBroadcasts(t *testing.T) {
+	s := newServer(t)
+	card := createCard(t, s, "xkb-001", store.StatusTodo)
+
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	br, closeEvents := openEvents(t, ts.URL)
+	defer closeEvents()
+
+	s.Publish(Event{Type: EventBlocked, Card: card})
+	if got := readEvent(t, br); got.Type != EventBlocked || got.Card.ID != "xkb-001" {
+		t.Fatalf("published event: %+v", got)
+	}
+}
+
+// openEvents subscribes and returns the reader plus a closer that must run
+// before httptest.Server.Close: the SSE handler only returns once the client
+// body is closed, and Close waits for outstanding handlers.
+func openEvents(t *testing.T, baseURL string) (*bufio.Reader, func()) {
+	t.Helper()
+	resp, err := http.Get(baseURL + "/api/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		resp.Body.Close()
+		t.Fatalf("content type: %s", ct)
+	}
+	br := bufio.NewReader(resp.Body)
+	waitForComment(t, br)
+	return br, func() { resp.Body.Close() }
 }
 
 func TestServeStopsOnCancel(t *testing.T) {
