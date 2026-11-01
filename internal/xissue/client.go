@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,8 @@ type Client struct {
 	Token   string
 	DataDir string
 	HTTP    *http.Client
+
+	ensureMu sync.Mutex
 }
 
 // New returns a client; dataDir is the xissue data root (used for local diff
@@ -164,11 +167,19 @@ func (c *Client) Health(ctx context.Context) error {
 }
 
 // EnsureProjectAndRepo finds or registers the local repository in xissue.
+// A project is reused whenever its name matches repoNameFor or one of its
+// repos already registered this path as remoteUrl; a matched project missing
+// this repo gets it appended instead of creating a new project. The mutex
+// serializes the list-then-create sequence so concurrent dispatches cannot
+// create twin projects.
 func (c *Client) EnsureProjectAndRepo(ctx context.Context, projectPath string) (projectID, repoID int64, err error) {
 	abs, err := filepath.Abs(projectPath)
 	if err != nil {
 		return 0, 0, err
 	}
+	c.ensureMu.Lock()
+	defer c.ensureMu.Unlock()
+
 	data, err := c.do(ctx, http.MethodGet, "/api/projects", nil)
 	if err != nil {
 		return 0, 0, err
@@ -177,28 +188,39 @@ func (c *Client) EnsureProjectAndRepo(ctx context.Context, projectPath string) (
 	if err := json.Unmarshal(data, &projects); err != nil {
 		return 0, 0, fmt.Errorf("decode projects: %w", err)
 	}
-	for _, p := range projects {
+	name := repoNameFor(abs)
+	var existing *Project
+	for i := range projects {
+		p := &projects[i]
 		for _, r := range p.Repos {
 			if samePath(r.RemoteURL, abs) {
 				return p.ID, r.ID, nil
 			}
 		}
+		if existing == nil && p.Name == name {
+			existing = p
+		}
 	}
 
-	name := repoNameFor(abs)
-	data, err = c.do(ctx, http.MethodPost, "/api/projects", map[string]any{
-		"name":        name,
-		"description": "xkb managed project",
-		"devMode":     "single_main",
-	})
-	if err != nil {
-		return 0, 0, fmt.Errorf("create project: %w", err)
+	projID := int64(0)
+	if existing != nil {
+		projID = existing.ID
+	} else {
+		data, err = c.do(ctx, http.MethodPost, "/api/projects", map[string]any{
+			"name":        name,
+			"description": "xkb managed project",
+			"devMode":     "single_main",
+		})
+		if err != nil {
+			return 0, 0, fmt.Errorf("create project: %w", err)
+		}
+		var proj Project
+		if err := json.Unmarshal(data, &proj); err != nil {
+			return 0, 0, fmt.Errorf("decode project: %w", err)
+		}
+		projID = proj.ID
 	}
-	var proj Project
-	if err := json.Unmarshal(data, &proj); err != nil {
-		return 0, 0, fmt.Errorf("decode project: %w", err)
-	}
-	data, err = c.do(ctx, http.MethodPost, fmt.Sprintf("/api/projects/%d/repos", proj.ID), map[string]any{
+	data, err = c.do(ctx, http.MethodPost, fmt.Sprintf("/api/projects/%d/repos", projID), map[string]any{
 		"name":          name,
 		"remoteUrl":     abs,
 		"defaultBranch": "main",
@@ -210,7 +232,7 @@ func (c *Client) EnsureProjectAndRepo(ctx context.Context, projectPath string) (
 	if err := json.Unmarshal(data, &repo); err != nil {
 		return 0, 0, fmt.Errorf("decode repo: %w", err)
 	}
-	return proj.ID, repo.ID, nil
+	return projID, repo.ID, nil
 }
 
 func issuePriority(p string) string {

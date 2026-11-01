@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -72,6 +73,102 @@ func TestEnsureProjectAndRepoCreates(t *testing.T) {
 	}
 	if createdRepo["remoteUrl"] != projectPath {
 		t.Fatalf("repo body: %v", createdRepo)
+	}
+}
+
+func TestEnsureProjectAndRepoAttachesRepoToNamedProject(t *testing.T) {
+	projectPath := t.TempDir()
+	name := repoNameFor(projectPath)
+	projectPosts := 0
+	var repoBody map[string]any
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/projects":
+			json.NewEncoder(w).Encode([]Project{{
+				ID: 5, Name: name,
+				Repos: []Repo{{ID: 7, ProjectID: 5, RemoteURL: "/nonexistent/other-repo"}},
+			}})
+		case r.Method == "POST" && r.URL.Path == "/api/projects":
+			projectPosts++
+			json.NewEncoder(w).Encode(Project{ID: 99})
+		case r.Method == "POST" && r.URL.Path == "/api/projects/5/repos":
+			json.NewDecoder(r.Body).Decode(&repoBody)
+			json.NewEncoder(w).Encode(Repo{ID: 13, ProjectID: 5})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	pid, rid, err := client.EnsureProjectAndRepo(context.Background(), projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pid != 5 || rid != 13 {
+		t.Fatalf("ids %d %d", pid, rid)
+	}
+	if projectPosts != 0 {
+		t.Fatal("project recreated despite name match")
+	}
+	if repoBody["remoteUrl"] != projectPath || repoBody["name"] != name {
+		t.Fatalf("repo body: %v", repoBody)
+	}
+}
+
+func TestEnsureProjectAndRepoConcurrent(t *testing.T) {
+	projectPath := t.TempDir()
+	name := repoNameFor(projectPath)
+	var mu sync.Mutex
+	var projects []Project
+	nextID := int64(9)
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/projects":
+			json.NewEncoder(w).Encode(projects)
+		case r.Method == "POST" && r.URL.Path == "/api/projects":
+			p := Project{ID: nextID, Name: name}
+			nextID++
+			projects = append(projects, p)
+			json.NewEncoder(w).Encode(p)
+		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/api/projects/") && strings.HasSuffix(r.URL.Path, "/repos"):
+			var body Repo
+			json.NewDecoder(r.Body).Decode(&body)
+			repo := Repo{ID: nextID, ProjectID: projects[len(projects)-1].ID, RemoteURL: body.RemoteURL}
+			nextID++
+			projects[len(projects)-1].Repos = append(projects[len(projects)-1].Repos, repo)
+			json.NewEncoder(w).Encode(repo)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	const n = 8
+	var wg sync.WaitGroup
+	results := make(chan [2]int64, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pid, rid, err := client.EnsureProjectAndRepo(context.Background(), projectPath)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			results <- [2]int64{pid, rid}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	got := map[[2]int64]bool{}
+	for id := range results {
+		got[id] = true
+	}
+	if len(got) != 1 {
+		t.Fatalf("concurrent calls returned %d distinct id pairs: %v", len(got), got)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("server created %d projects, want 1", len(projects))
 	}
 }
 
