@@ -143,7 +143,7 @@ blocked ──(xkb retry)──> todo
 - 验收前会把 Agent 留在工作区里的未提交改动提交为 `xkb round N`，这样二轮增量审查才能使用真实的 `lastReviewedSHA..HEAD` 范围。
 - 当 `xissue` 旧版本返回的 `worktreePath` / `patch` 为空，或 patch 漏掉 untracked 文件时，`xkb` 会回退到本地 `git diff` 和 `git status`，保证门禁与 Reviewer 看到的是同一份真实改动。
 - 并行只在**路径不重叠**时发生：同项目 `touches` 重叠的卡片串行；不同项目可并行。
-- 通过后调用 `submit(mode=merge_local)` 合入目标分支并清理临时分支/Worktree；`done` 卡片不保留 Worktree。
+- 通过后调用 `submit(mode=merge_local)` 合入目标分支并清理临时分支/Worktree；`done` 卡片不保留 Worktree。`merge_local` 只会写本地路径仓库：`xissue` 中该项目仓库的 `remote_url` 必须是本地目录（如 `/Users/you/src/app`）；GitHub/GitLab 远程仓库应改用 PR 或仅推送分支的模式，否则会报“直接合入仅支持本地路径仓库”。
 - 归档规则（任一命中）：Done 超过 `doneMaxCount`（默认 20，归档最老的）、Done 停留超过 `doneTTLHours`（默认 24 小时）、同一 Spec 下全部子卡完成且最后一张完成满 1 小时。
 - 同一时刻只允许一个引擎持有 `~/.xkb/engine.lock`。多个引擎长期共用一个库是危险的：验收状态是进程内状态，只有持锁进程会执行完整闭环。
 
@@ -732,6 +732,19 @@ xkb retry <id>           # 确认可重试后重置到 todo
 **端口冲突 / CLI 读不到 server**
 
 `server --port` 与 `config.yaml` 的 `serverURL` 必须一致；只改其中一个会导致 CLI 健康探测失败并回退 SQLite。默认端口 `7790`。
+
+**合入失败：`直接合入仅支持本地路径仓库`**
+
+`xkb` 走的是 `xissue` 的 `merge_local`，只写本地路径仓库。若 `xissue` 中该项目的仓库注册成了 `https://github.com/...` 这类远程地址，合入一定失败，修改会保留在工作区。处理方式：
+
+```bash
+sqlite3 ~/.xissue/xissue.db \
+  "select id,project_id,name,provider,remote_url from repos;"
+```
+
+- 期望：`xkb` 项目的 `remote_url` 是本地仓库绝对路径，`provider` 为 `plain`；
+- 若是 GitHub/GitLab 远程：改用 PR 或“仅推送分支”的提交模式，不要用 `merge_local`；
+- 修正项目仓库指向后重新提交该卡（`xkb retry <id>` 或按验收流程重试），不要手工直接改目标分支。
 
 **Worktree 残留**
 
