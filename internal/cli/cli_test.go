@@ -97,7 +97,7 @@ func TestLogsPrintsAgentEvents(t *testing.T) {
 	cfg := &config.Config{MaxConcurrent: 5, SmallExecAgent: config.AgentModel{Agent: "omp"}}
 	eng := engine.New(st, xissue.New(srv.URL, "", t.TempDir()), cfg)
 	var out bytes.Buffer
-	if err := Run(context.Background(), st, eng, []string{"logs", card.ID}, &out); err != nil {
+	if err := Run(context.Background(), st, eng, []string{"logs", card.ID, "--tail", "1"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "tool_call") || !strings.Contains(out.String(), "go test") {

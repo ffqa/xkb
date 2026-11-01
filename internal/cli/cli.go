@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -367,20 +368,31 @@ func Archive(ctx context.Context, eng *engine.Engine, args []string, out io.Writ
 
 // Logs prints the recorded xissue agent events for a card's current run.
 func Logs(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
-	fs.SetOutput(out)
-	tail := fs.Int("tail", 50, "number of recent events")
-	asJSON := fs.Bool("json", false, "JSON output")
-	if err := fs.Parse(args); err != nil {
-		return err
+	tail := 50
+	asJSON := false
+	var ids []string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--tail" || args[i] == "-tail":
+			if i+1 < len(args) {
+				i++
+				tail, _ = strconv.Atoi(args[i])
+			}
+		case strings.HasPrefix(args[i], "--tail="):
+			tail, _ = strconv.Atoi(strings.TrimPrefix(args[i], "--tail="))
+		case args[i] == "--json" || args[i] == "-json":
+			asJSON = true
+		default:
+			ids = append(ids, args[i])
+		}
 	}
-	if fs.NArg() != 1 {
+	if len(ids) != 1 {
 		return fmt.Errorf("usage: xkb logs <card-id> [--tail N] [--json]")
 	}
 	if eng == nil || eng.Client == nil {
 		return fmt.Errorf("xissue client unavailable")
 	}
-	card, err := st.GetCard(ctx, fs.Arg(0))
+	card, err := st.GetCard(ctx, ids[0])
 	if err != nil {
 		return err
 	}
@@ -391,10 +403,10 @@ func Logs(ctx context.Context, st *store.Store, eng *engine.Engine, args []strin
 	if err != nil {
 		return err
 	}
-	if *tail > 0 && len(events) > *tail {
-		events = events[len(events)-*tail:]
+	if tail > 0 && len(events) > tail {
+		events = events[len(events)-tail:]
 	}
-	if *asJSON {
+	if asJSON {
 		return printJSON(out, events)
 	}
 	fmt.Fprintf(out, "card %s run %d: %d events\n", card.ID, card.XIssueRunID, len(events))
