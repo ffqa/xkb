@@ -1,10 +1,14 @@
 // Package cli implements xkb's non-interactive subcommands so both the binary
 // and the TUI command bar share one implementation.
+//
+// add/ready/list probe the server from config.serverURL: when its /api/health
+// answers they go over HTTP, otherwise they write and read SQLite directly.
 package cli
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -29,11 +33,11 @@ func Run(ctx context.Context, st *store.Store, eng *engine.Engine, args []string
 		}
 		return SpecNew(ctx, st, args[2:], out)
 	case "add":
-		return Add(ctx, st, args[1:], out)
+		return Add(ctx, st, eng, args[1:], out)
 	case "ready":
-		return Ready(ctx, st, args[1:], out)
+		return Ready(ctx, st, eng, args[1:], out)
 	case "list":
-		return List(ctx, st, args[1:], out)
+		return List(ctx, st, eng, args[1:], out)
 	case "show":
 		return Show(ctx, st, args[1:], out)
 	case "retry":
@@ -96,7 +100,7 @@ func SpecNew(ctx context.Context, st *store.Store, args []string, out io.Writer)
 }
 
 // Add creates a backlog card.
-func Add(ctx context.Context, st *store.Store, args []string, out io.Writer) error {
+func Add(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fs.SetOutput(out)
 	project := fs.String("project", "", "local git repository path")
@@ -125,26 +129,56 @@ func Add(ctx context.Context, st *store.Store, args []string, out io.Writer) err
 		}
 		*goal = body
 	}
-	card, err := st.CreateCard(ctx, &store.Card{
+	input := &store.Card{
 		SpecID: *spec, ProjectPath: *project, Title: *title,
 		Priority: *priority, Size: *size, SecuritySensitive: *security,
 		Touches: SplitList(*touches), DependsOn: SplitList(*depends),
 		VerifyCmd: *verify, Goal: *goal, OutOfScope: *scope, Acceptance: *accept,
-	})
-	if err != nil {
-		return err
+	}
+	api := newClient(eng)
+	card := input
+	if api.online(ctx) {
+		created, err := api.createCard(ctx, input)
+		switch {
+		case err == nil:
+			card = created
+		case !errors.Is(err, errUnrouted):
+			return err
+		}
+	}
+	if card == input {
+		var err error
+		card, err = st.CreateCard(ctx, input)
+		if err != nil {
+			return err
+		}
 	}
 	fmt.Fprintln(out, card.ID)
 	return nil
 }
 
 // Ready validates cards and moves them to todo.
-func Ready(ctx context.Context, st *store.Store, args []string, out io.Writer) error {
+func Ready(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: xkb ready <card-id>...")
 	}
 	var failed int
+	api := newClient(eng)
+	online := api.online(ctx)
 	for _, id := range args {
+		if online {
+			err := api.readyCard(ctx, id)
+			if err == nil {
+				fmt.Fprintf(out, "%s: todo\n", id)
+				continue
+			}
+			if !errors.Is(err, errUnrouted) {
+				fmt.Fprintf(out, "%s: %v\n", id, err)
+				failed++
+				continue
+			}
+			online = false // server build has no write routes; finish locally
+		}
 		card, err := st.GetCard(ctx, id)
 		if err != nil {
 			fmt.Fprintf(out, "%s: %v\n", id, err)
@@ -176,7 +210,7 @@ func Ready(ctx context.Context, st *store.Store, args []string, out io.Writer) e
 }
 
 // List prints cards.
-func List(ctx context.Context, st *store.Store, args []string, out io.Writer) error {
+func List(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(out)
 	status := fs.String("status", "", "filter by status")
@@ -188,9 +222,33 @@ func List(ctx context.Context, st *store.Store, args []string, out io.Writer) er
 	if *status != "" {
 		filter.Statuses = SplitList(*status)
 	}
-	cards, err := st.ListCards(ctx, filter)
-	if err != nil {
-		return err
+	var cards []*store.Card
+	if api := newClient(eng); api.online(ctx) {
+		if remote, ok := api.listCards(ctx); ok {
+			cards = remote
+			// The server returns every card; the status filter is applied here
+			// so the CLI output matches the SQLite path.
+			if len(filter.Statuses) > 0 {
+				keep := map[string]bool{}
+				for _, s := range filter.Statuses {
+					keep[s] = true
+				}
+				var matched []*store.Card
+				for _, c := range cards {
+					if keep[c.Status] {
+						matched = append(matched, c)
+					}
+				}
+				cards = matched
+			}
+		}
+	}
+	if cards == nil {
+		var err error
+		cards, err = st.ListCards(ctx, filter)
+		if err != nil {
+			return err
+		}
 	}
 	if *asJSON {
 		return printJSON(out, cards)
