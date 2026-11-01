@@ -187,3 +187,19 @@ func TestDevinReviewDetectsProjectMutation(t *testing.T) {
 		t.Fatalf("expected repo mutation error, got %v", err)
 	}
 }
+
+func TestDevinCommandArgOrder(t *testing.T) {
+	_, args, _ := commandFor(config.AgentModel{Agent: "devin", Model: "swe-2-high"}, "PROMPT")
+	if len(args) < 2 || args[len(args)-2] != "-p" || args[len(args)-1] != "PROMPT" {
+		t.Fatalf("prompt must follow -p: %v", args)
+	}
+	foundModel := false
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) && args[i+1] == "swe-2-high" {
+			foundModel = true
+		}
+	}
+	if !foundModel {
+		t.Fatalf("model flag missing: %v", args)
+	}
+}

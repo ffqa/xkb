@@ -275,11 +275,13 @@ func commandFor(agent config.AgentModel, prompt string) (string, []string, []str
 		}
 		return "opencode", append(args, prompt), env
 	case "devin", "":
-		args := []string{"-p", "--permission-mode", "auto", "--respect-workspace-trust", "false"}
+		args := []string{"--permission-mode", "auto", "--respect-workspace-trust", "false"}
 		if agent.Model != "" {
 			args = append(args, "--model", agent.Model)
 		}
-		return "devin", append(args, prompt), env
+		// The prompt must be the inline value of -p, otherwise devin treats it
+		// as a positional PATH and rejects the call.
+		return "devin", append(args, "-p", prompt), env
 	default:
 		return agent.Agent, []string{"-p", prompt}, env
 	}
