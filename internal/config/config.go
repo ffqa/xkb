@@ -32,6 +32,8 @@ type Config struct {
 	VerifyTimeoutSeconds int        `yaml:"verifyTimeoutSeconds"`
 	ReviewTimeoutSeconds int        `yaml:"reviewTimeoutSeconds"`
 	RunTimeoutMinutes    int        `yaml:"runTimeoutMinutes"`
+	ServerPort           int        `yaml:"serverPort"`
+	ServerURL            string     `yaml:"serverURL"`
 }
 
 // Home returns the xkb data directory (XKB_HOME overrides ~/.xkb).
@@ -63,6 +65,8 @@ func Default() *Config {
 		VerifyTimeoutSeconds: 180,
 		ReviewTimeoutSeconds: 600,
 		RunTimeoutMinutes:    30,
+		ServerPort:           7790,
+		ServerURL:            "http://127.0.0.1:7790",
 	}
 }
 
@@ -128,6 +132,12 @@ func fillDefaults(cfg *Config) {
 	}
 	if cfg.XIssueDataDir == "" {
 		cfg.XIssueDataDir = d.XIssueDataDir
+	}
+	if cfg.ServerPort <= 0 {
+		cfg.ServerPort = d.ServerPort
+	}
+	if cfg.ServerURL == "" {
+		cfg.ServerURL = fmt.Sprintf("http://127.0.0.1:%d", cfg.ServerPort)
 	}
 }
 
