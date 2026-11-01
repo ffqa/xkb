@@ -242,3 +242,40 @@ func TestDeleteRemovesCardAndReviewRuns(t *testing.T) {
 		t.Fatal("deleting an unknown card must fail")
 	}
 }
+
+func TestDeleteCancelsActiveRun(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.CreateCard(context.Background(), &store.Card{
+		ProjectPath: t.TempDir(), Title: "card", Touches: []string{"a"},
+		Status: store.StatusReview, XIssueRunID: 9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/runs/9/cancel" {
+			cancelled = true
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	cfg := &config.Config{MaxConcurrent: 5, SmallExecAgent: config.AgentModel{Agent: "omp"}}
+	eng := engine.New(st, xissue.New(srv.URL, "", t.TempDir()), cfg)
+	var out bytes.Buffer
+	if err := Run(context.Background(), st, eng, []string{"delete", card.ID}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !cancelled {
+		t.Fatal("cancel API not called for review card")
+	}
+	if _, err := st.GetCard(context.Background(), card.ID); err == nil {
+		t.Fatal("card still present")
+	}
+}

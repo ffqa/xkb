@@ -47,7 +47,7 @@ func Run(ctx context.Context, st *store.Store, eng *engine.Engine, args []string
 	case "archive":
 		return Archive(ctx, st, eng, args[1:], out)
 	case "delete":
-		return Delete(ctx, st, args[1:], out)
+		return Delete(ctx, st, eng, args[1:], out)
 	case "logs":
 		return Logs(ctx, st, eng, args[1:], out)
 	case "cancel":
@@ -386,13 +386,8 @@ func archiveCard(ctx context.Context, st *store.Store, eng *engine.Engine, id st
 	if err != nil {
 		return err
 	}
+	cancelActiveRun(ctx, eng, card, out)
 	if eng != nil && eng.Client != nil {
-		active := card.Status == store.StatusRunning || card.Status == store.StatusReview
-		if active && card.XIssueRunID != 0 {
-			if err := eng.Client.CancelRun(ctx, card.XIssueRunID); err != nil {
-				fmt.Fprintf(out, "cancel run %d: %v\n", card.XIssueRunID, err)
-			}
-		}
 		if err := eng.Client.ArchiveIssue(ctx, card.XIssueIssueID); err != nil {
 			fmt.Fprintf(out, "archive issue %d: %v\n", card.XIssueIssueID, err)
 		}
@@ -407,18 +402,33 @@ func archiveCard(ctx context.Context, st *store.Store, eng *engine.Engine, id st
 	return nil
 }
 
+// cancelActiveRun stops the card's xissue run when it is still in flight.
+// Failure is reported only: callers must still finish their local change.
+func cancelActiveRun(ctx context.Context, eng *engine.Engine, card *store.Card, out io.Writer) {
+	if eng == nil || eng.Client == nil || card.XIssueRunID == 0 {
+		return
+	}
+	if card.Status != store.StatusRunning && card.Status != store.StatusReview {
+		return
+	}
+	if err := eng.Client.CancelRun(ctx, card.XIssueRunID); err != nil {
+		fmt.Fprintf(out, "cancel run %d: %v\n", card.XIssueRunID, err)
+	}
+}
+
 // Delete permanently removes cards and their review evidence.
-func Delete(ctx context.Context, st *store.Store, args []string, out io.Writer) error {
+func Delete(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: xkb delete <card-id>...")
 	}
 	for _, id := range args {
-		ok, err := st.DeleteCard(ctx, id)
+		card, err := st.GetCard(ctx, id)
 		if err != nil {
 			return err
 		}
-		if !ok {
-			return fmt.Errorf("card %s not found", id)
+		cancelActiveRun(ctx, eng, card, out)
+		if _, err := st.DeleteCard(ctx, id); err != nil {
+			return err
 		}
 		fmt.Fprintf(out, "%s: deleted\n", id)
 	}
