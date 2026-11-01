@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -136,11 +137,24 @@ func cmdServer(ctx context.Context, cfg *config.Config, eng *engine.Engine, args
 	return serve(sctx, eng, srv, ln)
 }
 
+// engineShutdownTimeout bounds how long shutdown waits for the scheduler to
+// finish an in-flight cycle.
+const engineShutdownTimeout = 5 * time.Second
+
 // serve runs the scheduler alongside the HTTP server; both stop when ctx is
-// cancelled.
+// cancelled, and it returns only once the scheduler goroutine has exited.
 func serve(ctx context.Context, eng *engine.Engine, srv *server.Server, ln net.Listener) error {
-	go eng.Run(ctx)
-	return srv.Serve(ctx, ln)
+	engineDone := make(chan struct{})
+	go func() {
+		defer close(engineDone)
+		eng.Run(ctx)
+	}()
+	err := srv.Serve(ctx, ln)
+	select {
+	case <-engineDone:
+	case <-time.After(engineShutdownTimeout):
+	}
+	return err
 }
 
 func cmdMCP(ctx context.Context, st *store.Store, args []string) error {

@@ -3,10 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,14 +18,21 @@ import (
 	"github.com/xpier/xkb/internal/xissue"
 )
 
-func TestServeSchedulesAndShutsDownOnCancel(t *testing.T) {
-	// Health-only stub: the engine's RunOnce marks xissue reachable once the
-	// scheduler loop actually runs.
-	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{}`))
-	}))
-	defer daemon.Close()
+// blockedTransport ignores request cancellation, so an engine cycle stays in
+// flight past ctx cancellation: shutdown must wait for it.
+type blockedTransport struct {
+	started chan struct{}
+	delay   time.Duration
+	once    sync.Once
+}
 
+func (b *blockedTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	b.once.Do(func() { close(b.started) })
+	time.Sleep(b.delay)
+	return nil, errors.New("stub: unreachable")
+}
+
+func TestServeSchedulesAndShutsDownOnCancel(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +40,11 @@ func TestServeSchedulesAndShutsDownOnCancel(t *testing.T) {
 	defer st.Close()
 
 	cfg := config.Default()
-	eng := engine.New(st, xissue.New(daemon.URL, "", t.TempDir()), cfg)
+	eng := engine.New(st, xissue.New("http://127.0.0.1:1", "", t.TempDir()), cfg)
+	eng.Log = nil
+	tr := &blockedTransport{started: make(chan struct{}), delay: 400 * time.Millisecond}
+	eng.Client.HTTP = &http.Client{Transport: tr}
+
 	srv := server.New(eng)
 	ln, err := net.Listen("tcp", "127.0.0.1:0") // kernel-assigned, never 7789
 	if err != nil {
@@ -42,18 +54,6 @@ func TestServeSchedulesAndShutsDownOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- serve(ctx, eng, srv, ln) }()
-
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if online, _ := eng.Status(); online {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatal("engine scheduler did not run under server")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 
 	resp, err := http.Get("http://" + ln.Addr().String() + "/api/health")
 	if err != nil {
@@ -72,7 +72,15 @@ func TestServeSchedulesAndShutsDownOnCancel(t *testing.T) {
 		t.Fatalf("health: %d %v", resp.StatusCode, health)
 	}
 
+	// Cancel while the scheduler is inside a cycle that ignores ctx.
+	select {
+	case <-tr.started:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("engine scheduler did not run under server")
+	}
 	cancel()
+	start := time.Now()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -80,5 +88,8 @@ func TestServeSchedulesAndShutsDownOnCancel(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve did not return after cancel")
+	}
+	if elapsed := time.Since(start); elapsed < 300*time.Millisecond {
+		t.Fatalf("serve returned in %v: scheduler cycle was still in flight", elapsed)
 	}
 }
