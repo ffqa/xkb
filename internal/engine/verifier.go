@@ -170,7 +170,11 @@ func (e *Engine) VerifyCard(ctx context.Context, cardID string) error {
 		e.eventf("card %s blocked: %s", card.ID, reason)
 		return nil
 	}
-	e.recordReview(ctx, card, round, "ai_review", agent.Agent, baseSHA, headSHA, res.Verdict, res.Findings)
+	recordVerdict := res.Verdict
+	if res.Failing() || res.MechanicalOnly() {
+		recordVerdict = "FAIL"
+	}
+	e.recordReview(ctx, card, round, "ai_review", agent.Agent, baseSHA, headSHA, recordVerdict, res.Findings)
 	if res.Failing() {
 		card.LastReviewedSHA = headSHA
 		reason := findingsText(res.Findings)

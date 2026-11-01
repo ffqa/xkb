@@ -708,3 +708,42 @@ func runGit(t *testing.T, dir string, args ...string) {
 }
 
 var _ = reviewer.Finding{}
+
+func TestMediumFindingOverridesPassVerdict(t *testing.T) {
+	eng, f, st := testEngine(t)
+	ctx := context.Background()
+	worktree := newGitRepo(t)
+	runGit(t, worktree, "checkout", "-b", "xkb-1")
+	if err := os.MkdirAll(filepath.Join(worktree, "internal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "internal", "a.go"), []byte("package internal\n"+strings.Repeat("// line\n", 20)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	card := newCard(t, st, func(c *store.Card) {
+		c.Status = store.StatusReview
+		c.XIssueRunID = 1
+		c.Priority = "P2"
+		c.Touches = []string{"internal/"}
+		c.VerifyCmd = "true"
+	})
+	f.runs[1] = &xissue.RunInfo{ID: 1, IssueID: 1, Status: "completed", TargetBranch: "main"}
+	f.changes[1] = []xissue.RepoChange{{
+		RepoName: "repo", WorktreePath: worktree,
+		Files: []xissue.FileChange{{Path: "internal/a.go", Additions: 20}},
+	}}
+	eng.Reviewer.Exec = func(context.Context, string, []string, string, ...string) (string, error) {
+		return `{"verdict":"PASS","findings":[{"severity":"medium","mechanical":false,"file":"internal/a.go","line":1,"issue":"risk"}]}`, nil
+	}
+	if err := eng.VerifyCard(ctx, card.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetCard(ctx, card.ID)
+	if got.Status != store.StatusRunning || got.RetryCount != 1 {
+		t.Fatalf("card not sent back: %+v", got)
+	}
+	runs, _ := st.ListReviewRuns(ctx, card.ID)
+	if len(runs) < 2 || runs[len(runs)-1].Stage != "ai_review" || runs[len(runs)-1].Verdict != "FAIL" {
+		t.Fatalf("review record must be FAIL: %+v", runs)
+	}
+}

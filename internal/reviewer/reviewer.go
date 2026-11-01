@@ -292,7 +292,7 @@ func buildPrompt(req Request) string {
 	b.WriteString("你是只读交叉审查官。禁止调用任何工具（read/grep/exec/edit/write 等），不要检查工作区，禁止修改文件或运行命令。只根据下面的 Diff 审查，只输出一个 JSON 对象，不要代码块或解释：\n")
 	b.WriteString(`{"verdict":"PASS|FAIL","findings":[{"severity":"blocking|high|medium|low","mechanical":false,"file":"","line":0,"issue":"","fix":""}]}`)
 	b.WriteString("\n规则：只审查本卡目标与对应 diff；越界改动、安全事故、数据损坏、错误处理缺失记为 blocking/high；")
-	b.WriteString("注释、命名、死代码等机械问题标记 mechanical=true，不阻塞合入。验收命令仅供规则参考，禁止执行。\n")
+	b.WriteString("注释、命名、死代码等机械问题标记 mechanical=true，不阻塞合入。只要存在非 mechanical 的 blocking/high/medium，verdict 必须为 FAIL。验收命令仅供规则参考，禁止执行。\n")
 	fmt.Fprintf(&b, "卡片: %s %s\n目标: %s\n禁区: %s\n验收: %s\n", req.Card.ID, req.Card.Title, req.Card.Goal, req.Card.OutOfScope, req.Card.Acceptance)
 	if req.Incremental && len(req.PrevFindings) > 0 {
 		prev, _ := json.Marshal(req.PrevFindings)
