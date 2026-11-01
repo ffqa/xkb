@@ -106,3 +106,32 @@ func TestSpecAndCardLifecycle(t *testing.T) {
 		t.Fatalf("persist: %v", err)
 	}
 }
+
+func TestDeleteCardRemovesReviewRuns(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "xkb.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	c, err := st.CreateCard(ctx, &Card{ProjectPath: "/tmp/proj", Title: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordReviewRun(ctx, &ReviewRun{CardID: c.ID, Round: 1, Stage: "gate_cmd", Reviewer: "gate", Verdict: "PASS"}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := st.DeleteCard(ctx, c.ID)
+	if err != nil || !ok {
+		t.Fatalf("delete: %v %v", ok, err)
+	}
+	if _, err := st.GetCard(ctx, c.ID); err == nil {
+		t.Fatal("card still present")
+	}
+	if runs, err := st.ListReviewRuns(ctx, c.ID); err != nil || len(runs) != 0 {
+		t.Fatalf("review runs: %v %+v", err, runs)
+	}
+	if ok, err := st.DeleteCard(ctx, c.ID); err != nil || ok {
+		t.Fatalf("second delete: %v %v", ok, err)
+	}
+}

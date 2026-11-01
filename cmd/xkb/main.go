@@ -68,7 +68,7 @@ func run(args []string) error {
 		startAutoUpdate(sctx, cfg)
 		eng.Run(sctx)
 		return nil
-	case "spec", "add", "ready", "list", "show", "retry", "archive", "logs", "cancel":
+	case "spec", "add", "ready", "list", "show", "retry", "archive", "delete", "logs", "cancel":
 		return cli.Run(ctx, st, eng, args, os.Stdout)
 	case "server":
 		return cmdServer(ctx, cfg, eng, args[1:])
@@ -82,7 +82,7 @@ func run(args []string) error {
 	case "mcp":
 		return cmdMCP(ctx, st, args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (want daemon, server, service, spec, add, ready, list, show, retry, archive, logs, cancel, mcp, update, version)", args[0])
+		return fmt.Errorf("unknown command %q (want daemon, server, service, spec, add, ready, list, show, retry, archive, delete, logs, cancel, mcp, update, version)", args[0])
 	}
 }
 

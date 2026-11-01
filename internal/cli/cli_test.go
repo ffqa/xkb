@@ -142,3 +142,103 @@ func TestCancelStopsRunAndBlocks(t *testing.T) {
 		t.Fatalf("card: %+v", got)
 	}
 }
+
+func TestArchiveNamedCardCancelsRunAndArchivesIssue(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.CreateCard(context.Background(), &store.Card{
+		ProjectPath: t.TempDir(), Title: "card", Touches: []string{"a"},
+		Status: store.StatusRunning, XIssueRunID: 5, XIssueIssueID: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cancelled, issueArchived bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/runs/5/cancel":
+			cancelled = true
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/issues/7":
+			issueArchived = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	cfg := &config.Config{MaxConcurrent: 5, SmallExecAgent: config.AgentModel{Agent: "omp"}}
+	eng := engine.New(st, xissue.New(srv.URL, "", t.TempDir()), cfg)
+	var out bytes.Buffer
+	if err := Run(context.Background(), st, eng, []string{"archive", card.ID}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !cancelled || !issueArchived {
+		t.Fatalf("cancelled=%v issueArchived=%v", cancelled, issueArchived)
+	}
+	got, err := st.GetCard(context.Background(), card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusArchived || got.ArchivedAt == nil {
+		t.Fatalf("card: %+v", got)
+	}
+}
+
+func TestArchiveWithoutEngineArchivesLocally(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.CreateCard(context.Background(), &store.Card{
+		ProjectPath: t.TempDir(), Title: "card", Touches: []string{"a"}, Status: store.StatusBlocked,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Run(context.Background(), st, nil, []string{"archive", card.ID}, &out); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetCard(context.Background(), card.ID)
+	if got.Status != store.StatusArchived {
+		t.Fatalf("card: %+v", got)
+	}
+}
+
+func TestDeleteRemovesCardAndReviewRuns(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.CreateCard(context.Background(), &store.Card{
+		ProjectPath: t.TempDir(), Title: "card", Touches: []string{"a"}, Status: store.StatusDone,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordReviewRun(context.Background(), &store.ReviewRun{
+		CardID: card.ID, Round: 1, Stage: "gate_cmd", Reviewer: "gate", Verdict: "PASS",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Run(context.Background(), st, nil, []string{"delete", card.ID}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetCard(context.Background(), card.ID); err == nil {
+		t.Fatal("card still present")
+	}
+	if runs, err := st.ListReviewRuns(context.Background(), card.ID); err != nil || len(runs) != 0 {
+		t.Fatalf("review runs: %v %+v", err, runs)
+	}
+	out.Reset()
+	if err := Run(context.Background(), st, nil, []string{"delete", card.ID}, &out); err == nil {
+		t.Fatal("deleting an unknown card must fail")
+	}
+}

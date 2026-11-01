@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/xpier/xkb/internal/engine"
 	"github.com/xpier/xkb/internal/gate"
@@ -44,7 +45,9 @@ func Run(ctx context.Context, st *store.Store, eng *engine.Engine, args []string
 	case "retry":
 		return Retry(ctx, st, args[1:], out)
 	case "archive":
-		return Archive(ctx, eng, args[1:], out)
+		return Archive(ctx, st, eng, args[1:], out)
+	case "delete":
+		return Delete(ctx, st, args[1:], out)
 	case "logs":
 		return Logs(ctx, st, eng, args[1:], out)
 	case "cancel":
@@ -343,16 +346,24 @@ func Retry(ctx context.Context, st *store.Store, args []string, out io.Writer) e
 	return nil
 }
 
-// Archive archives done cards.
-func Archive(ctx context.Context, eng *engine.Engine, args []string, out io.Writer) error {
-	if eng == nil {
-		return fmt.Errorf("归档引擎不可用")
-	}
+// Archive archives done cards, or the cards named on the command line.
+func Archive(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("archive", flag.ContinueOnError)
 	fs.SetOutput(out)
 	allDone := fs.Bool("all-done", false, "archive every done card now")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if ids := fs.Args(); len(ids) > 0 {
+		for _, id := range ids {
+			if err := archiveCard(ctx, st, eng, id, out); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if eng == nil {
+		return fmt.Errorf("归档引擎不可用")
 	}
 	var n int
 	var err error
@@ -365,6 +376,52 @@ func Archive(ctx context.Context, eng *engine.Engine, args []string, out io.Writ
 		return err
 	}
 	fmt.Fprintf(out, "archived %d card(s)\n", n)
+	return nil
+}
+
+// archiveCard archives one card of any status. Stopping its xissue run and
+// archiving the issue are best effort: the local card is archived regardless.
+func archiveCard(ctx context.Context, st *store.Store, eng *engine.Engine, id string, out io.Writer) error {
+	card, err := st.GetCard(ctx, id)
+	if err != nil {
+		return err
+	}
+	if eng != nil && eng.Client != nil {
+		active := card.Status == store.StatusRunning || card.Status == store.StatusReview
+		if active && card.XIssueRunID != 0 {
+			if err := eng.Client.CancelRun(ctx, card.XIssueRunID); err != nil {
+				fmt.Fprintf(out, "cancel run %d: %v\n", card.XIssueRunID, err)
+			}
+		}
+		if err := eng.Client.ArchiveIssue(ctx, card.XIssueIssueID); err != nil {
+			fmt.Fprintf(out, "archive issue %d: %v\n", card.XIssueIssueID, err)
+		}
+	}
+	now := time.Now().UTC()
+	card.Status = store.StatusArchived
+	card.ArchivedAt = &now
+	if err := st.UpdateCard(ctx, card); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s: archived\n", card.ID)
+	return nil
+}
+
+// Delete permanently removes cards and their review evidence.
+func Delete(ctx context.Context, st *store.Store, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: xkb delete <card-id>...")
+	}
+	for _, id := range args {
+		ok, err := st.DeleteCard(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("card %s not found", id)
+		}
+		fmt.Fprintf(out, "%s: deleted\n", id)
+	}
 	return nil
 }
 

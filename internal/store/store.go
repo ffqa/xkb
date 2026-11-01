@@ -412,6 +412,31 @@ func (s *Store) UpdateCard(ctx context.Context, card *Card) error {
 	return nil
 }
 
+// DeleteCard permanently removes a card and its review evidence. It reports
+// whether the card existed so callers can warn about unknown ids.
+func (s *Store) DeleteCard(ctx context.Context, id string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM review_runs WHERE card_id=?`, id); err != nil {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM cards WHERE id=?`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 // ListCards returns cards matching filter, ordered by priority then creation.
 func (s *Store) ListCards(ctx context.Context, filter CardFilter) ([]*Card, error) {
 	query := `SELECT ` + cardCols + ` FROM cards`
