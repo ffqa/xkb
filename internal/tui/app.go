@@ -2,7 +2,11 @@
 package tui
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,6 +27,17 @@ var columnStatuses = []string{
 var columnTitles = []string{"Backlog", "Todo", "Running", "Review", "Done"}
 
 type tickMsg time.Time
+
+// eventMsg reports one server SSE event; sseDownMsg means the stream ended or
+// could not connect; sseRetryMsg re-arms the listener after a delay.
+type (
+	eventMsg    struct{}
+	sseDownMsg  struct{}
+	sseRetryMsg struct{}
+)
+
+// sseRetryDelay is how long the board waits before reconnecting the event stream.
+const sseRetryDelay = 5 * time.Second
 
 // Model is the bubbletea board model.
 type Model struct {
@@ -52,18 +67,19 @@ type Model struct {
 	width   int
 	height  int
 	message string
+	sseURL  string
 }
 
 // New builds the board model.
 func New(st *store.Store, eng *engine.Engine, cfg *config.Config) Model {
-	m := Model{Store: st, Engine: eng, Config: cfg, cols: map[string][]*store.Card{}}
+	m := Model{Store: st, Engine: eng, Config: cfg, cols: map[string][]*store.Card{}, sseURL: eventsURL(cfg)}
 	m.refresh(context.Background())
 	return m
 }
 
-// Init starts the background engine loop.
+// Init starts the background engine loop and listens for server events.
 func (m Model) Init() tea.Cmd {
-	return m.tickCmd()
+	return tea.Batch(m.tickCmd(), m.waitEventCmd())
 }
 
 func (m Model) tickCmd() tea.Cmd {
@@ -90,10 +106,62 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.refresh(context.Background())
 		return m, tickLater()
+	case eventMsg:
+		// Server said something changed: redraw now instead of waiting for the tick.
+		m.refresh(context.Background())
+		return m, m.waitEventCmd()
+	case sseDownMsg:
+		// No server (daemon-only mode): the 2s tick keeps the board fresh.
+		return m, tea.Tick(sseRetryDelay, func(time.Time) tea.Msg { return sseRetryMsg{} })
+	case sseRetryMsg:
+		return m, m.waitEventCmd()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
+}
+
+// waitEventCmd blocks until the server sends one SSE event, then disconnects.
+// Unreachable servers fall back to the tick refresh.
+// shortcut: one connection per event; upgrade to a persistent reader if
+// transitions ever become frequent.
+func (m Model) waitEventCmd() tea.Cmd {
+	url := m.sseURL
+	if url == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		resp, err := http.Get(url)
+		if err != nil {
+			return sseDownMsg{}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return sseDownMsg{}
+		}
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			if strings.HasPrefix(scanner.Text(), "data:") {
+				return eventMsg{}
+			}
+		}
+		return sseDownMsg{}
+	}
+}
+
+// eventsURL builds the SSE endpoint from the configured server address.
+func eventsURL(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	base := strings.TrimRight(cfg.ServerURL, "/")
+	if base == "" && cfg.ServerPort > 0 {
+		base = fmt.Sprintf("http://127.0.0.1:%d", cfg.ServerPort)
+	}
+	if base == "" {
+		return ""
+	}
+	return base + "/api/events"
 }
 
 // SetMessage sets the status line shown above the board.
