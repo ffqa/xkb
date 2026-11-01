@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -126,4 +128,49 @@ func GitDiff(ctx context.Context, dir, base string) (string, error) {
 		return buf.String()[:maxPatchBytes] + "\n... (patch truncated at 256KB)\n", nil
 	}
 	return buf.String(), nil
+}
+
+// ChangedStats returns changed files and total changed lines from the
+// merge-base through the working tree, including untracked files.
+func ChangedStats(ctx context.Context, dir, base string) ([]FileChange, int, error) {
+	mb := MergeBase(ctx, dir, base)
+	if mb == "" {
+		return nil, 0, fmt.Errorf("cannot resolve diff base in %s", dir)
+	}
+	out, err := git(ctx, dir, "-c", "core.quotepath=false", "diff", "--no-renames", "--numstat", mb)
+	if err != nil {
+		return nil, 0, err
+	}
+	files := []FileChange{}
+	total := 0
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		add, _ := strconv.Atoi(parts[0])
+		del, _ := strconv.Atoi(parts[1])
+		files = append(files, FileChange{Path: parts[2], Status: "M", Additions: add, Deletions: del})
+		total += add + del
+	}
+	untracked, _ := git(ctx, dir, "ls-files", "--others", "--exclude-standard", "-z")
+	for _, rel := range strings.Split(untracked, "\x00") {
+		if rel == "" {
+			continue
+		}
+		data, rerr := os.ReadFile(filepath.Join(dir, rel))
+		if rerr != nil {
+			continue
+		}
+		lines := bytes.Count(data, []byte("\n"))
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			lines++
+		}
+		files = append(files, FileChange{Path: rel, Status: "?", Additions: lines})
+		total += lines
+	}
+	return files, total, nil
 }

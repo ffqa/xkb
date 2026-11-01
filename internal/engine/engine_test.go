@@ -298,6 +298,13 @@ func TestReviewerFailureBlocksImmediately(t *testing.T) {
 	eng, f, st := testEngine(t)
 	ctx := context.Background()
 	worktree := newGitRepo(t)
+	runGit(t, worktree, "checkout", "-b", "xkb-1")
+	if err := os.MkdirAll(filepath.Join(worktree, "internal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "internal", "a.go"), []byte("package internal\n"+strings.Repeat("// line\n", 20)), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	card := newCard(t, st, func(c *store.Card) {
 		c.Status = store.StatusReview
 		c.XIssueRunID = 1
@@ -361,11 +368,16 @@ func TestVerifyCommitsWorktreeForIncrementalReview(t *testing.T) {
 			{Path: "internal/new.go", Additions: 15},
 		},
 	}}
-	eng.Reviewer.Exec = func(context.Context, string, []string, string, ...string) (string, error) {
+	var reviewArgs string
+	eng.Reviewer.Exec = func(_ context.Context, _ string, _ []string, _ string, args ...string) (string, error) {
+		reviewArgs = strings.Join(args, " ")
 		return `{"verdict":"PASS","findings":[]}`, nil
 	}
 	if err := eng.VerifyCard(ctx, card.ID); err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(reviewArgs, "internal/new.go") {
+		t.Fatalf("review diff missing untracked file: %s", reviewArgs)
 	}
 	got, _ := st.GetCard(ctx, card.ID)
 	if got.Status != store.StatusDone {
@@ -464,6 +476,10 @@ func TestVerifyGateFailRetriesThenBlocks(t *testing.T) {
 	eng, f, st := testEngine(t)
 	ctx := context.Background()
 	worktree := newGitRepo(t)
+	runGit(t, worktree, "checkout", "-b", "xkb-1")
+	if err := os.WriteFile(filepath.Join(worktree, "bad.go"), []byte("package bad\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	card := newCard(t, st, func(c *store.Card) {
 		c.Status = store.StatusReview
 		c.XIssueRunID = 1
@@ -553,6 +569,13 @@ func TestMechanicalFindingsRetryThenSkipAI(t *testing.T) {
 	eng, f, st := testEngine(t)
 	ctx := context.Background()
 	worktree := newGitRepo(t)
+	runGit(t, worktree, "checkout", "-b", "xkb-1")
+	if err := os.MkdirAll(filepath.Join(worktree, "internal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "internal", "a.go"), []byte("package internal\n"+strings.Repeat("// line\n", 20)), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	card := newCard(t, st, func(c *store.Card) {
 		c.Status = store.StatusReview
 		c.XIssueRunID = 1

@@ -97,6 +97,18 @@ func (e *Engine) VerifyCard(ctx context.Context, cardID string) error {
 		if baseSHA == "" {
 			baseSHA = xissue.MergeBase(ctx, worktree, targetBranch)
 		}
+		// xissue's patch may omit untracked files; after the commit above the
+		// local diff is authoritative for both the gate and the reviewer.
+		if stats, total, serr := xissue.ChangedStats(ctx, worktree, targetBranch); serr == nil {
+			files = files[:0]
+			for _, f := range stats {
+				files = append(files, f.Path)
+			}
+			totalLines = total
+		}
+		if d, derr := xissue.GitDiff(ctx, worktree, targetBranch); derr == nil && strings.TrimSpace(d) != "" {
+			patches = []string{d}
+		}
 	}
 
 	// Stage 1: zero-token gate.

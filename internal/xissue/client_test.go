@@ -249,3 +249,33 @@ func TestGetRunChangesFallback(t *testing.T) {
 		t.Fatalf("patch missing changes:\n%s", ch.Patch)
 	}
 }
+
+func TestChangedStatsIncludesUntracked(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n\nfunc a() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, total, err := ChangedStats(context.Background(), dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := map[string]bool{}
+	for _, f := range files {
+		paths[f.Path] = true
+	}
+	if !paths["a.go"] || !paths["new.go"] {
+		t.Fatalf("files: %+v", files)
+	}
+	if total == 0 {
+		t.Fatal("total lines is zero")
+	}
+}
