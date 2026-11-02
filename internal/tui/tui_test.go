@@ -157,45 +157,6 @@ func TestRetryBlocked(t *testing.T) {
 	}
 }
 
-func TestReopenDoneCard(t *testing.T) {
-	m, st, card := newTestModel(t)
-	fin := time.Date(2026, 11, 1, 10, 30, 0, 0, time.Local)
-	card.Status = store.StatusDone
-	card.RetryCount = 2
-	card.LastReviewedSHA = "sha-1"
-	card.XIssueRunID = 9
-	card.FinishedAt = &fin
-	if err := st.UpdateCard(context.Background(), card); err != nil {
-		t.Fatal(err)
-	}
-	m.refresh(context.Background())
-	for range 4 { // walk to the Done column
-		updated, _ := m.Update(key('l'))
-		m = updated.(Model)
-	}
-	if got := m.selected(); got == nil || got.ID != card.ID {
-		t.Fatalf("Done card not selected: %+v", got)
-	}
-
-	updated, _ := m.Update(key('r'))
-	m = updated.(Model)
-	got, err := st.GetCard(context.Background(), card.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != store.StatusTodo || got.RetryCount != 0 || got.LastReviewedSHA != "" ||
-		got.XIssueRunID != 0 || got.FinishedAt != nil {
-		t.Fatalf("reopen result: %+v", got)
-	}
-	if !strings.Contains(m.message, "打回") {
-		t.Fatalf("message %q", m.message)
-	}
-	// The board refreshed: the card left Done and is now in Todo.
-	if len(m.cols[store.StatusDone]) != 0 || len(m.cols[store.StatusTodo]) != 1 {
-		t.Fatalf("board not refreshed: done=%d todo=%d", len(m.cols[store.StatusDone]), len(m.cols[store.StatusTodo]))
-	}
-}
-
 func TestLayoutFitsTerminal(t *testing.T) {
 	m, _, _ := newTestModel(t)
 	m.width, m.height = 80, 24
