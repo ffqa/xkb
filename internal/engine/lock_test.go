@@ -15,6 +15,10 @@ func TestAcquireLockIsExclusive(t *testing.T) {
 	if _, err := AcquireLock(path); !errors.Is(err, ErrLocked) {
 		t.Fatalf("second acquire: %v", err)
 	}
+	holder := ReadLockHolder(path)
+	if holder == "" {
+		t.Fatal("expected lock holder info, got empty")
+	}
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}

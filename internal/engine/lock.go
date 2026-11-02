@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 )
 
 // ErrLocked means another xkb process owns the engine lock.
@@ -33,7 +35,23 @@ func AcquireLock(path string) (*Lock, error) {
 		}
 		return nil, fmt.Errorf("flock %s: %w", path, err)
 	}
+	_ = f.Truncate(0)
+	_, _ = f.Seek(0, 0)
+	_, _ = fmt.Fprintf(f, "pid=%d time=%s\n", os.Getpid(), time.Now().Format("2006-01-02 15:04:05"))
 	return &Lock{file: f}, nil
+}
+
+// ReadLockHolder attempts to read the PID/time recorded by the active lock holder.
+func ReadLockHolder(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	s := strings.TrimSpace(string(data))
+	if s == "" {
+		return ""
+	}
+	return s
 }
 
 // Close releases the lock.

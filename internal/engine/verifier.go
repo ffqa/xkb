@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -347,6 +348,13 @@ func (e *Engine) submit(ctx context.Context, card *store.Card, base, head string
 		e.recordReview(ctx, card, card.RetryCount+1, "merge", "xissue", base, head, "FAIL", findings)
 		return e.failCard(ctx, card, "合入失败: "+err.Error(), "merge", base, head, findings)
 	}
+	if head != "" && card.ProjectPath != "" {
+		if err := verifyMergedLocally(ctx, card.ProjectPath, head); err != nil {
+			findings := findingsForProblems([]string{"主干合入校验失败: " + err.Error()})
+			e.recordReview(ctx, card, card.RetryCount+1, "merge", "local_verify", base, head, "FAIL", findings)
+			return e.failCard(ctx, card, "主干合入校验失败: "+err.Error(), "merge", base, head, findings)
+		}
+	}
 	now := time.Now().UTC()
 	card.Status = store.StatusDone
 	card.FinishedAt = &now
@@ -356,6 +364,20 @@ func (e *Engine) submit(ctx context.Context, card *store.Card, base, head string
 	}
 	e.eventf("card %s merged and done", card.ID)
 	e.afterDone(ctx)
+	return nil
+}
+
+func verifyMergedLocally(ctx context.Context, projectPath, head string) error {
+	if _, err := os.Stat(filepath.Join(projectPath, ".git")); err != nil {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", projectPath, "merge-base", "--is-ancestor", head, "HEAD")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		cmdMain := exec.CommandContext(ctx, "git", "-C", projectPath, "merge-base", "--is-ancestor", head, "main")
+		if outMain, errMain := cmdMain.CombinedOutput(); errMain != nil {
+			return fmt.Errorf("提交 %s 未合入本地主分支: %s", head, strings.TrimSpace(string(out)+"\n"+string(outMain)))
+		}
+	}
 	return nil
 }
 

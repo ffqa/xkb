@@ -191,7 +191,20 @@ func (e *Engine) syncActive(ctx context.Context, all []*store.Card) ([]*store.Ca
 						return nil, err
 					}
 				case "submitted":
-					// Already merged/submitted outside xkb; never submit twice.
+					// If the run is marked submitted in xissue, ensure the changes are genuinely
+					// merged into the local project. If unconfirmed, advance to review so
+					// verification can finish the merge.
+					if card.ProjectPath != "" && card.LastReviewedSHA != "" {
+						if err := verifyMergedLocally(ctx, card.ProjectPath, card.LastReviewedSHA); err != nil {
+							card.Status = store.StatusReview
+							card.LastError = ""
+							if err := e.Store.UpdateCard(ctx, card); err != nil {
+								return nil, err
+							}
+							e.eventf("card %s submitted in xissue but local merge unconfirmed; advancing to review", card.ID)
+							break
+						}
+					}
 					card.Status = store.StatusDone
 					card.LastError = ""
 					now := e.now()
@@ -199,7 +212,7 @@ func (e *Engine) syncActive(ctx context.Context, all []*store.Card) ([]*store.Ca
 					if err := e.Store.UpdateCard(ctx, card); err != nil {
 						return nil, err
 					}
-					e.eventf("card %s already submitted in xissue; marked done", card.ID)
+					e.eventf("card %s submitted in xissue and verified; marked done", card.ID)
 				case "failed", "cancelled", "discarded":
 					e.handleDeadRun(ctx, card, run)
 				case "awaiting_permission":
@@ -246,6 +259,16 @@ func (e *Engine) runTimedOut(card *store.Card) bool {
 }
 
 func (e *Engine) handleDeadRun(ctx context.Context, card *store.Card, run *xissue.RunInfo) {
+	if card.XIssueRunID > 0 && e.Client != nil {
+		if changes, err := e.Client.GetRunChanges(ctx, card.XIssueRunID); err == nil {
+			for _, ch := range changes {
+				if ch.WorktreePath != "" {
+					_ = xissue.CommitWorktree(ctx, ch.WorktreePath, fmt.Sprintf("xkb snapshot before %s", run.Status))
+					break
+				}
+			}
+		}
+	}
 	reason := fmt.Sprintf("xissue run %s: %s", run.Status, strings.TrimSpace(run.Error))
 	if card.RetryCount >= 2 {
 		card.Status = store.StatusBlocked

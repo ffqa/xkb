@@ -205,6 +205,11 @@ func (c *Client) EnsureProjectAndRepo(ctx context.Context, projectPath string) (
 	projID := int64(0)
 	if existing != nil {
 		projID = existing.ID
+		for _, r := range existing.Repos {
+			if r.Name == name {
+				return projID, r.ID, nil
+			}
+		}
 	} else {
 		data, err = c.do(ctx, http.MethodPost, "/api/projects", map[string]any{
 			"name":        name,
@@ -435,18 +440,12 @@ func (c *Client) ArchiveIssue(ctx context.Context, issueID int64) error {
 	return err
 }
 
-// ReopenIssue returns a done or archived issue to todo in xissue so the next
-// run keeps the same issue id and its history. body replaces the issue body
-// when non-empty, syncing it with the card's updated goal.
-func (c *Client) ReopenIssue(ctx context.Context, issueID int64, body string) error {
+// ReopenIssue resets the issue status back to todo in xissue.
+func (c *Client) ReopenIssue(ctx context.Context, issueID int64) error {
 	if issueID == 0 {
 		return nil
 	}
-	patch := map[string]any{"status": "todo"}
-	if body != "" {
-		patch["body"] = body
-	}
-	_, err := c.do(ctx, http.MethodPatch, fmt.Sprintf("/api/issues/%d", issueID), patch)
+	_, err := c.do(ctx, http.MethodPatch, fmt.Sprintf("/api/issues/%d", issueID), map[string]any{"status": "todo"})
 	return err
 }
 

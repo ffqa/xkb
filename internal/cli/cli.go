@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -237,6 +238,7 @@ func list(ctx context.Context, st *store.Store, eng *engine.Engine, args []strin
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(out)
 	status := fs.String("status", "", "filter by status")
+	project := fs.String("project", "", "filter by project path (e.g. . or /path/to/repo)")
 	asJSON := fs.Bool("json", false, "JSON output")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -245,11 +247,18 @@ func list(ctx context.Context, st *store.Store, eng *engine.Engine, args []strin
 	if *status != "" {
 		filter.Statuses = SplitList(*status)
 	}
+	if *project != "" {
+		if abs, err := filepath.Abs(*project); err == nil {
+			filter.ProjectPath = abs
+		} else {
+			filter.ProjectPath = *project
+		}
+	}
 	var cards []*store.Card
 	if api := newClient(eng); api.online(ctx) {
 		if remote, ok := api.listCards(ctx); ok {
 			cards = remote
-			// The server returns every card; the status filter is applied here
+			// The server returns every card; filters are applied here
 			// so the CLI output matches the SQLite path.
 			if len(filter.Statuses) > 0 {
 				keep := map[string]bool{}
@@ -259,6 +268,15 @@ func list(ctx context.Context, st *store.Store, eng *engine.Engine, args []strin
 				var matched []*store.Card
 				for _, c := range cards {
 					if keep[c.Status] {
+						matched = append(matched, c)
+					}
+				}
+				cards = matched
+			}
+			if filter.ProjectPath != "" {
+				var matched []*store.Card
+				for _, c := range cards {
+					if c.ProjectPath == filter.ProjectPath || filepath.Base(c.ProjectPath) == filepath.Base(filter.ProjectPath) {
 						matched = append(matched, c)
 					}
 				}
@@ -277,9 +295,13 @@ func list(ctx context.Context, st *store.Store, eng *engine.Engine, args []strin
 		return printJSON(out, cards)
 	}
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tPRIO\tSTATUS\tAGENT\tRETRY\tTITLE")
+	fmt.Fprintln(w, "ID\tPRIO\tSTATUS\tPROJECT\tAGENT\tRETRY\tTITLE")
 	for _, c := range cards {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n", c.ID, c.Priority, c.Status, c.ExecAgent, c.RetryCount, c.Title)
+		projName := filepath.Base(c.ProjectPath)
+		if projName == "" || projName == "." {
+			projName = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", c.ID, c.Priority, c.Status, projName, c.ExecAgent, c.RetryCount, c.Title)
 	}
 	return w.Flush()
 }
@@ -348,87 +370,57 @@ func Retry(ctx context.Context, st *store.Store, args []string, out io.Writer) e
 	return nil
 }
 
-// Reopen sends done or archived cards back to todo so a rejected review can be
-// reworked. --feedback (or --file) appends the rejection note to the card goal,
-// and the matching xissue issue is reset in place, keeping the same issue id.
+// Reopen moves done or archived cards back to todo, optionally appending review feedback.
 func Reopen(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
-	var feedback, file string
-	var ids []string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--feedback" || a == "-feedback" || a == "--file" || a == "-file":
-			if i+1 >= len(args) {
-				return fmt.Errorf("flag %s needs a value", a)
-			}
-			i++
-			if strings.HasSuffix(a, "file") {
-				file = args[i]
-			} else {
-				feedback = args[i]
-			}
-		case strings.HasPrefix(a, "--feedback=") || strings.HasPrefix(a, "-feedback="):
-			feedback = a[strings.Index(a, "=")+1:]
-		case strings.HasPrefix(a, "--file=") || strings.HasPrefix(a, "-file="):
-			file = a[strings.Index(a, "=")+1:]
-		default:
-			ids = append(ids, a)
+	fs := flag.NewFlagSet("reopen", flag.ContinueOnError)
+	fs.SetOutput(out)
+	feedback := fs.String("feedback", "", "rejection feedback to append to card goal")
+	file := fs.String("file", "", "file containing rejection feedback")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ids := fs.Args()
+	if len(ids) == 0 {
+		return fmt.Errorf("usage: xkb reopen [--feedback \"...\"] [--file <path>] <card-id>...")
+	}
+	fbText := strings.TrimSpace(*feedback)
+	if *file != "" {
+		content, err := readBody(*file)
+		if err != nil {
+			return fmt.Errorf("read feedback file: %w", err)
+		}
+		if fbText != "" {
+			fbText += "\n" + strings.TrimSpace(content)
+		} else {
+			fbText = strings.TrimSpace(content)
 		}
 	}
-	if len(ids) == 0 {
-		return fmt.Errorf("usage: xkb reopen <card-id>... [--feedback <text> | --file <path>]")
-	}
-	note := strings.TrimSpace(feedback)
-	if note == "" && file != "" {
-		body, err := readBody(file)
+	for _, id := range ids {
+		card, err := st.GetCard(ctx, id)
 		if err != nil {
 			return err
 		}
-		note = strings.TrimSpace(body)
-	}
-	var failed int
-	for _, id := range ids {
-		if err := reopenCard(ctx, st, eng, id, note, out); err != nil {
-			fmt.Fprintf(out, "%s: %v\n", id, err)
-			failed++
+		if card.Status != store.StatusDone && card.Status != store.StatusArchived {
+			return fmt.Errorf("card %s is %s, want done or archived", card.ID, card.Status)
 		}
-	}
-	if failed > 0 {
-		return fmt.Errorf("%d card(s) rejected", failed)
-	}
-	return nil
-}
-
-// reopenCard resets one card. The local update is authoritative; resetting the
-// xissue issue is best effort like archiveCard's remote sync.
-func reopenCard(ctx context.Context, st *store.Store, eng *engine.Engine, id, note string, out io.Writer) error {
-	card, err := st.GetCard(ctx, id)
-	if err != nil {
-		return err
-	}
-	if card.Status != store.StatusDone && card.Status != store.StatusArchived {
-		return fmt.Errorf("status is %s, want done or archived", card.Status)
-	}
-	if note != "" {
-		card.Goal = strings.TrimSpace(card.Goal + "\n\n打回反馈：\n" + note)
-	}
-	card.Status = store.StatusTodo
-	card.RetryCount = 0
-	card.LastError = ""
-	card.LastReviewedSHA = ""
-	card.XIssueRunID = 0
-	card.StartedAt = nil
-	card.FinishedAt = nil
-	card.ArchivedAt = nil
-	if err := st.UpdateCard(ctx, card); err != nil {
-		return err
-	}
-	if eng != nil && eng.Client != nil {
-		if err := eng.Client.ReopenIssue(ctx, card.XIssueIssueID, card.Goal); err != nil {
-			fmt.Fprintf(out, "reopen issue %d: %v\n", card.XIssueIssueID, err)
+		card.Status = store.StatusTodo
+		card.RetryCount = 0
+		card.LastError = ""
+		card.LastReviewedSHA = ""
+		card.XIssueRunID = 0
+		card.StartedAt = nil
+		card.FinishedAt = nil
+		if fbText != "" {
+			card.Goal = strings.TrimSpace(card.Goal) + "\n\n[打回反馈]\n" + fbText
 		}
+		if err := st.UpdateCard(ctx, card); err != nil {
+			return err
+		}
+		if eng != nil && eng.Client != nil && card.XIssueIssueID > 0 {
+			_ = eng.Client.ReopenIssue(ctx, card.XIssueIssueID)
+		}
+		fmt.Fprintf(out, "%s: todo\n", card.ID)
 	}
-	fmt.Fprintf(out, "%s: todo\n", card.ID)
 	return nil
 }
 
@@ -552,7 +544,10 @@ func Logs(ctx context.Context, st *store.Store, eng *engine.Engine, args []strin
 		return err
 	}
 	if card.XIssueRunID == 0 {
-		return fmt.Errorf("card %s has no active xissue run", card.ID)
+		if card.LastError != "" {
+			return fmt.Errorf("card %s has no active xissue run (status: %s, last error: %s; run 'xkb show %s' for details)", card.ID, card.Status, card.LastError, card.ID)
+		}
+		return fmt.Errorf("card %s has no active xissue run (status: %s; run 'xkb show %s' for details)", card.ID, card.Status, card.ID)
 	}
 	events, err := eng.Client.RunEvents(ctx, card.XIssueRunID)
 	if err != nil {

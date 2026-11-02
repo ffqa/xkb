@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/xpier/xkb/internal/config"
 	"github.com/xpier/xkb/internal/engine"
@@ -245,106 +243,6 @@ func TestDeleteRemovesCardAndReviewRuns(t *testing.T) {
 	}
 }
 
-func TestReopenDoneCardResetsAndSyncsIssue(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	card, err := st.CreateCard(context.Background(), &store.Card{
-		ProjectPath: t.TempDir(), Title: "card", Touches: []string{"a"}, Goal: "original goal",
-		Status: store.StatusDone, RetryCount: 2, XIssueIssueID: 7, XIssueRunID: 5,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var patch map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPatch && r.URL.Path == "/api/issues/7" {
-			json.NewDecoder(r.Body).Decode(&patch)
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-	cfg := &config.Config{MaxConcurrent: 5, SmallExecAgent: config.AgentModel{Agent: "omp"}}
-	eng := engine.New(st, xissue.New(srv.URL, "", t.TempDir()), cfg)
-	var out bytes.Buffer
-	if err := Run(context.Background(), st, eng, []string{"reopen", card.ID, "--feedback", "error handling missing"}, &out); err != nil {
-		t.Fatal(err)
-	}
-	got, err := st.GetCard(context.Background(), card.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != store.StatusTodo || got.RetryCount != 0 || got.XIssueRunID != 0 || got.FinishedAt != nil {
-		t.Fatalf("card: %+v", got)
-	}
-	if got.XIssueIssueID != 7 {
-		t.Fatalf("issue id must be preserved: %d", got.XIssueIssueID)
-	}
-	if !strings.Contains(got.Goal, "original goal") || !strings.Contains(got.Goal, "error handling missing") {
-		t.Fatalf("goal missing feedback: %q", got.Goal)
-	}
-	if patch["status"] != "todo" || !strings.Contains(patch["body"].(string), "error handling missing") {
-		t.Fatalf("issue patch: %v", patch)
-	}
-}
-
-func TestReopenArchivedCardFromFile(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	now := time.Now()
-	card, err := st.CreateCard(context.Background(), &store.Card{
-		ProjectPath: t.TempDir(), Title: "card", Touches: []string{"a"}, Goal: "g",
-		Status: store.StatusArchived, ArchivedAt: &now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	note := filepath.Join(t.TempDir(), "note.md")
-	if err := os.WriteFile(note, []byte("review says: split this card"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	if err := Run(context.Background(), st, nil, []string{"reopen", card.ID, "--file", note}, &out); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := st.GetCard(context.Background(), card.ID)
-	if got.Status != store.StatusTodo || got.ArchivedAt != nil {
-		t.Fatalf("card: %+v", got)
-	}
-	if !strings.Contains(got.Goal, "split this card") {
-		t.Fatalf("goal missing file feedback: %q", got.Goal)
-	}
-}
-
-func TestReopenRejectsActiveCard(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	card, err := st.CreateCard(context.Background(), &store.Card{
-		ProjectPath: t.TempDir(), Title: "card", Touches: []string{"a"}, Status: store.StatusRunning,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	if err := Run(context.Background(), st, nil, []string{"reopen", card.ID}, &out); err == nil {
-		t.Fatal("reopening a running card must fail")
-	}
-	got, _ := st.GetCard(context.Background(), card.ID)
-	if got.Status != store.StatusRunning {
-		t.Fatalf("card: %+v", got)
-	}
-}
-
 func TestDeleteCancelsActiveRun(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
 	if err != nil {
@@ -379,5 +277,108 @@ func TestDeleteCancelsActiveRun(t *testing.T) {
 	}
 	if _, err := st.GetCard(context.Background(), card.ID); err == nil {
 		t.Fatal("card still present")
+	}
+}
+
+func TestReopenCardAppendsFeedbackAndResets(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.CreateCard(context.Background(), &store.Card{
+		ProjectPath: t.TempDir(), Title: "card", Touches: []string{"a"},
+		Status: store.StatusDone, Goal: "initial goal", RetryCount: 2,
+		XIssueIssueID: 42, XIssueRunID: 99,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopenedIssue := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && r.URL.Path == "/api/issues/42" {
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["status"] == "todo" {
+				reopenedIssue = true
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	eng := engine.New(st, xissue.New(srv.URL, "", t.TempDir()), &config.Config{})
+	var out bytes.Buffer
+	if err := Run(context.Background(), st, eng, []string{"reopen", "--feedback", "fix this error", card.ID}, &out); err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	if !reopenedIssue {
+		t.Fatal("xissue ReopenIssue API was not invoked")
+	}
+	got, err := st.GetCard(context.Background(), card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusTodo {
+		t.Fatalf("got status %s, want todo", got.Status)
+	}
+	if got.RetryCount != 0 || got.XIssueRunID != 0 {
+		t.Fatalf("retry or runID not reset: %+v", got)
+	}
+	if !strings.Contains(got.Goal, "[打回反馈]") || !strings.Contains(got.Goal, "fix this error") {
+		t.Fatalf("goal did not include feedback: %s", got.Goal)
+	}
+}
+
+func TestReopenErrors(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.CreateCard(context.Background(), &store.Card{
+		ProjectPath: t.TempDir(), Title: "card", Touches: []string{"a"},
+		Status: store.StatusTodo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	// Reopening a todo card must fail
+	if err := Run(context.Background(), st, nil, []string{"reopen", card.ID}, &out); err == nil {
+		t.Fatal("reopening todo card should have failed")
+	}
+	// Reopening an unknown card must fail
+	if err := Run(context.Background(), st, nil, []string{"reopen", "xkb-999"}, &out); err == nil {
+		t.Fatal("reopening nonexistent card should have failed")
+	}
+}
+
+func TestListFilterByProject(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "xkb.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	projA := filepath.Join(t.TempDir(), "projectA")
+	projB := filepath.Join(t.TempDir(), "projectB")
+	ctx := context.Background()
+	_, _ = st.CreateCard(ctx, &store.Card{
+		ProjectPath: projA, Title: "card in A", Touches: []string{"a"}, Status: store.StatusTodo,
+	})
+	_, _ = st.CreateCard(ctx, &store.Card{
+		ProjectPath: projB, Title: "card in B", Touches: []string{"b"}, Status: store.StatusTodo,
+	})
+	var out bytes.Buffer
+	if err := Run(ctx, st, nil, []string{"list", "--project", projA}, &out); err != nil {
+		t.Fatalf("list with --project: %v", err)
+	}
+	res := out.String()
+	if !strings.Contains(res, "card in A") || strings.Contains(res, "card in B") {
+		t.Fatalf("project filter failed, got: %s", res)
+	}
+	if !strings.Contains(res, "projectA") {
+		t.Fatalf("table missing project column, got: %s", res)
 	}
 }

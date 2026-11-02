@@ -56,6 +56,10 @@ func run(args []string) error {
 	case "daemon":
 		lock, err := engine.AcquireLock(engineLockPath())
 		if errors.Is(err, engine.ErrLocked) {
+			holder := engine.ReadLockHolder(engineLockPath())
+			if holder != "" {
+				return fmt.Errorf("engine.lock 已被占用 (%s)：已有 daemon 或 TUI 在运行", holder)
+			}
 			return fmt.Errorf("engine.lock 已被占用：已有 daemon 或 TUI 在运行")
 		}
 		if err != nil {
