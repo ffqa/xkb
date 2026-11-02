@@ -179,6 +179,18 @@ func toolDefs() []map[string]any {
 			},
 		},
 		{
+			"name":        "xkb_reopen_card",
+			"description": "将已完成（done）卡片打回 todo 重新执行；可附带打回反馈",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id":       map[string]any{"type": "string"},
+					"feedback": map[string]any{"type": "string"},
+				},
+			},
+		},
+		{
 			"name":        "xkb_board_status",
 			"description": "查询看板各列任务、阻塞原因及 Spec 完成度",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
@@ -209,6 +221,8 @@ func (s *Server) call(ctx context.Context, name string, args json.RawMessage) (s
 		return s.createCards(ctx, args)
 	case "xkb_promote_todo":
 		return s.promote(ctx, args)
+	case "xkb_reopen_card":
+		return s.reopen(ctx, args)
 	case "xkb_board_status":
 		return s.board(ctx)
 	default:
@@ -326,6 +340,39 @@ func (s *Server) promote(ctx context.Context, args json.RawMessage) (string, err
 		promoted = append(promoted, id)
 	}
 	return marshal(map[string]any{"promoted": promoted, "problems": problems}), nil
+}
+
+func (s *Server) reopen(ctx context.Context, args json.RawMessage) (string, error) {
+	var in struct {
+		ID       string `json:"id"`
+		Feedback string `json:"feedback"`
+	}
+	if err := json.Unmarshal(args, &in); err != nil {
+		return "", err
+	}
+	if in.ID == "" {
+		return "", fmt.Errorf("id is required")
+	}
+	card, err := s.Store.GetCard(ctx, in.ID)
+	if err != nil {
+		return "", err
+	}
+	if card.Status != store.StatusDone {
+		return "", fmt.Errorf("%s: status is %s, want done", in.ID, card.Status)
+	}
+	card.Status = store.StatusTodo
+	card.RetryCount = 0
+	card.LastReviewedSHA = ""
+	card.XIssueRunID = 0
+	card.StartedAt = nil
+	card.FinishedAt = nil
+	// shortcut: feedback lives in LastError; the engine clears it on dispatch,
+	// so later runs carry no stale note. Add a dedicated column if it must persist.
+	card.LastError = strings.TrimSpace(in.Feedback)
+	if err := s.Store.UpdateCard(ctx, card); err != nil {
+		return "", err
+	}
+	return marshal(map[string]any{"id": card.ID, "status": card.Status, "feedback": card.LastError}), nil
 }
 
 func (s *Server) board(ctx context.Context) (string, error) {

@@ -59,8 +59,15 @@ func TestToolsList(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools, _ := res["tools"].([]any)
-	if len(tools) != 4 {
+	if len(tools) != 5 {
 		t.Fatalf("tools: %d", len(tools))
+	}
+	names := map[string]bool{}
+	for _, tool := range tools {
+		names[tool.(map[string]any)["name"].(string)] = true
+	}
+	if !names["xkb_reopen_card"] {
+		t.Fatalf("tools missing xkb_reopen_card: %v", names)
 	}
 }
 
@@ -143,6 +150,64 @@ func TestCreateSpecCardsPromoteAndBoard(t *testing.T) {
 	}
 	if len(boardOut.Specs) != 1 || boardOut.Specs[0]["total"].(float64) != 2 {
 		t.Fatalf("specs: %+v", boardOut.Specs)
+	}
+}
+
+func TestReopenCard(t *testing.T) {
+	s := newServer(t)
+	ctx := context.Background()
+	card, err := s.Store.CreateCard(ctx, &store.Card{
+		ProjectPath: t.TempDir(), Title: "done card", Touches: []string{"internal/"},
+		Status: store.StatusDone, RetryCount: 2, LastReviewedSHA: "sha-1", XIssueRunID: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, rpcErr := call(t, s, "tools/call", map[string]any{
+		"name":      "xkb_reopen_card",
+		"arguments": map[string]any{"id": card.ID, "feedback": "fix the drift"},
+	})
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	if isErr, _ := res["isError"].(bool); isErr {
+		t.Fatalf("reopen failed: %s", toolText(t, res))
+	}
+	var out struct {
+		ID       string `json:"id"`
+		Status   string `json:"status"`
+		Feedback string `json:"feedback"`
+	}
+	if err := json.Unmarshal([]byte(toolText(t, res)), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ID != card.ID || out.Status != store.StatusTodo || out.Feedback != "fix the drift" {
+		t.Fatalf("reopen output: %+v", out)
+	}
+
+	got, err := s.Store.GetCard(ctx, card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusTodo || got.RetryCount != 0 || got.LastReviewedSHA != "" ||
+		got.XIssueRunID != 0 || got.FinishedAt != nil || got.LastError != "fix the drift" {
+		t.Fatalf("reopened card: %+v", got)
+	}
+
+	// Only done cards can be reopened.
+	res, _ = call(t, s, "tools/call", map[string]any{
+		"name": "xkb_reopen_card", "arguments": map[string]any{"id": card.ID},
+	})
+	if isErr, _ := res["isError"].(bool); !isErr {
+		t.Fatalf("reopen of todo card should fail: %v", res)
+	}
+
+	res, _ = call(t, s, "tools/call", map[string]any{
+		"name": "xkb_reopen_card", "arguments": map[string]any{"id": "xkb-999"},
+	})
+	if isErr, _ := res["isError"].(bool); !isErr {
+		t.Fatalf("reopen of unknown card should fail: %v", res)
 	}
 }
 

@@ -98,7 +98,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "p":
 			m.cyclePriority()
 		case "r":
-			m.retryBlocked()
+			if !m.reopenSelected() {
+				m.retryBlocked()
+			}
 		case "a":
 			m.archiveDone()
 		case "A":
@@ -312,6 +314,30 @@ func (m *Model) cyclePriority() {
 		m.message = fmt.Sprintf("%s -> %s", c.ID, c.Priority)
 		return nil
 	})
+}
+
+// reopenSelected sends the selected Done card back to Todo for another round.
+// It reports false when the selection is not Done so "r" can retry blocked
+// cards instead.
+func (m *Model) reopenSelected() bool {
+	card := m.selected()
+	if card == nil || card.Status != store.StatusDone {
+		return false
+	}
+	card.Status = store.StatusTodo
+	card.RetryCount = 0
+	card.LastReviewedSHA = ""
+	card.LastError = ""
+	card.XIssueRunID = 0
+	card.StartedAt = nil
+	card.FinishedAt = nil
+	if err := m.Store.UpdateCard(context.Background(), card); err != nil {
+		m.message = err.Error()
+		return true
+	}
+	m.message = card.ID + " -> Todo（已打回）"
+	m.refresh(context.Background())
+	return true
 }
 
 func (m *Model) retryBlocked() {
