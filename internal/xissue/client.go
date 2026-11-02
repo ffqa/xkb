@@ -435,6 +435,21 @@ func (c *Client) ArchiveIssue(ctx context.Context, issueID int64) error {
 	return err
 }
 
+// ReopenIssue returns a done or archived issue to todo in xissue so the next
+// run keeps the same issue id and its history. body replaces the issue body
+// when non-empty, syncing it with the card's updated goal.
+func (c *Client) ReopenIssue(ctx context.Context, issueID int64, body string) error {
+	if issueID == 0 {
+		return nil
+	}
+	patch := map[string]any{"status": "todo"}
+	if body != "" {
+		patch["body"] = body
+	}
+	_, err := c.do(ctx, http.MethodPatch, fmt.Sprintf("/api/issues/%d", issueID), patch)
+	return err
+}
+
 // RunEvent is one xissue ACP event (tool call, message, status, usage, ...).
 type RunEvent struct {
 	ID        int64           `json:"id"`

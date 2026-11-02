@@ -44,6 +44,8 @@ func Run(ctx context.Context, st *store.Store, eng *engine.Engine, args []string
 		return Show(ctx, st, args[1:], out)
 	case "retry":
 		return Retry(ctx, st, args[1:], out)
+	case "reopen":
+		return Reopen(ctx, st, eng, args[1:], out)
 	case "archive":
 		return Archive(ctx, st, eng, args[1:], out)
 	case "delete":
@@ -343,6 +345,90 @@ func Retry(ctx context.Context, st *store.Store, args []string, out io.Writer) e
 		}
 		fmt.Fprintf(out, "%s: todo\n", id)
 	}
+	return nil
+}
+
+// Reopen sends done or archived cards back to todo so a rejected review can be
+// reworked. --feedback (or --file) appends the rejection note to the card goal,
+// and the matching xissue issue is reset in place, keeping the same issue id.
+func Reopen(ctx context.Context, st *store.Store, eng *engine.Engine, args []string, out io.Writer) error {
+	var feedback, file string
+	var ids []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--feedback" || a == "-feedback" || a == "--file" || a == "-file":
+			if i+1 >= len(args) {
+				return fmt.Errorf("flag %s needs a value", a)
+			}
+			i++
+			if strings.HasSuffix(a, "file") {
+				file = args[i]
+			} else {
+				feedback = args[i]
+			}
+		case strings.HasPrefix(a, "--feedback=") || strings.HasPrefix(a, "-feedback="):
+			feedback = a[strings.Index(a, "=")+1:]
+		case strings.HasPrefix(a, "--file=") || strings.HasPrefix(a, "-file="):
+			file = a[strings.Index(a, "=")+1:]
+		default:
+			ids = append(ids, a)
+		}
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("usage: xkb reopen <card-id>... [--feedback <text> | --file <path>]")
+	}
+	note := strings.TrimSpace(feedback)
+	if note == "" && file != "" {
+		body, err := readBody(file)
+		if err != nil {
+			return err
+		}
+		note = strings.TrimSpace(body)
+	}
+	var failed int
+	for _, id := range ids {
+		if err := reopenCard(ctx, st, eng, id, note, out); err != nil {
+			fmt.Fprintf(out, "%s: %v\n", id, err)
+			failed++
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d card(s) rejected", failed)
+	}
+	return nil
+}
+
+// reopenCard resets one card. The local update is authoritative; resetting the
+// xissue issue is best effort like archiveCard's remote sync.
+func reopenCard(ctx context.Context, st *store.Store, eng *engine.Engine, id, note string, out io.Writer) error {
+	card, err := st.GetCard(ctx, id)
+	if err != nil {
+		return err
+	}
+	if card.Status != store.StatusDone && card.Status != store.StatusArchived {
+		return fmt.Errorf("status is %s, want done or archived", card.Status)
+	}
+	if note != "" {
+		card.Goal = strings.TrimSpace(card.Goal + "\n\n打回反馈：\n" + note)
+	}
+	card.Status = store.StatusTodo
+	card.RetryCount = 0
+	card.LastError = ""
+	card.LastReviewedSHA = ""
+	card.XIssueRunID = 0
+	card.StartedAt = nil
+	card.FinishedAt = nil
+	card.ArchivedAt = nil
+	if err := st.UpdateCard(ctx, card); err != nil {
+		return err
+	}
+	if eng != nil && eng.Client != nil {
+		if err := eng.Client.ReopenIssue(ctx, card.XIssueIssueID, card.Goal); err != nil {
+			fmt.Fprintf(out, "reopen issue %d: %v\n", card.XIssueIssueID, err)
+		}
+	}
+	fmt.Fprintf(out, "%s: todo\n", card.ID)
 	return nil
 }
 
