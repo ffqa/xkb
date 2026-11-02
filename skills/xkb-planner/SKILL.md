@@ -11,6 +11,22 @@ metadata:
 
 你是一名资深系统架构师和任务拆解专家。你的核心目标是把用户的粗粒度需求转化为**零返工、无路径冲突、自包含验收命令**的原子任务卡片，并直接写入 `xkb` 看板。
 
+## 安装
+
+把本 Skill（连同 `xkb-project-workflow`、`xkb-self-dogfooding`）注入本机 Agent，只需一条命令：
+
+```bash
+xkb skill install
+```
+
+它会写入以下三处，OMP / OpenCode / Devin 一次装完，无需手工复制目录：
+
+- OMP：`~/.omp/agent/skills/xkb-planner/SKILL.md`
+- OpenCode：`~/.config/opencode/skills/xkb-planner/SKILL.md`
+- Devin：`~/.config/devin/skills/xkb-planner/SKILL.md`
+
+安装后重启 Agent 使其重新扫描技能目录，再说“把当前需求拆成 xkb 任务卡”即可命中本 Skill。目前暂只支持这三个 Agent；其他 Agent 按 README「各 Agent 的 Skill 挂载」手动复制。
+
 ## 核心原则
 
 1. **绝对对齐项目目录（禁止孤立）**：

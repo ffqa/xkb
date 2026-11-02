@@ -44,7 +44,8 @@ xissue（Worktree 隔离 + ACP Agent + 20 分钟热会话）
   - [5.2 一键注册](#52-一键注册)
   - [5.3 各 Agent 的 MCP 配置](#53-各-agent-的-mcp-配置)
   - [5.4 各 Agent 的 Skill 挂载](#54-各-agent-的-skill-挂载)
-  - [5.5 自检](#55-自检)
+  - [5.5 一条命令安装 Skill](#55-一条命令安装-skill)
+  - [5.6 自检](#56-自检)
 - [6. 开发与发布](#6-开发与发布)
 - [7. 常见问题](#7-常见问题)
 
@@ -283,6 +284,7 @@ xkb
 | `xkb cancel <card-id>` | 取消 `xissue` run，卡片置 Blocked（原因“已手动取消”） |
 | `xkb archive [--all-done]` | 按三条规则归档 Done，或立即归档全部 Done |
 | `xkb mcp [--install]` | stdio MCP 服务；带 `--install` 注册 Devin/OpenCode |
+| `xkb skill install` | 把内置核心 Skill 注入 OMP / OpenCode / Devin |
 | `xkb update [--check] [--force]` | 自更新 |
 | `xkb version` | 版本与平台 |
 
@@ -372,7 +374,7 @@ serverURL: http://127.0.0.1:7790
 
 ## 4. Skills 使用全景
 
-这里说的 Skill 是 **Agent Skill**：`<skills-root>/<name>/SKILL.md`，带 `name` 和 `description` frontmatter，Agent 在系统提示里看到元数据，按需读取完整正文。xkb 仓库本身不打包 Skill 文件；以下 Skill 名来自团队技能库，按第 5 节挂载到对应 Agent 即可。
+这里说的 Skill 是 **Agent Skill**：`<skills-root>/<name>/SKILL.md`，带 `name` 和 `description` frontmatter，Agent 在系统提示里看到元数据，按需读取完整正文。xkb 仓库在 `skills/` 下自带三个核心 Skill，按第 5 节挂载到对应 Agent 即可（推荐 `xkb skill install` 一条命令装完）。
 
 ### 4.1 相关 Skill
 
@@ -618,7 +620,29 @@ cp -R <skills-src>/xkb-planner ~/.omp/agent/skills/
 - OMP 支持项目级 `.omp/skills/`（随项目分发）或 `skills.customDirectories` 指向其他根目录；
 - MCP 项目级配置：OMP 用 `.omp/mcp.json`，OpenCode 用项目 `opencode.json` / `.opencode/`，避免每个仓库重复配置全局服务。
 
-### 5.5 自检
+### 5.5 一条命令安装 Skill
+
+上面的手动复制可以省掉。`xkb` 内置三个核心 Skill（`xkb-planner`、`xkb-project-workflow`、`xkb-self-dogfooding`），一条命令即可注入到本机 Agent 的技能目录，OMP / OpenCode / Devin 一次装完：
+
+```bash
+xkb skill install
+```
+
+写入位置（保持 `<skills-root>/<name>/SKILL.md` 单层结构）：
+
+| Agent | 安装路径 |
+| :--- | :--- |
+| OMP | `~/.omp/agent/skills/xkb-planner/SKILL.md` |
+| OpenCode | `~/.config/opencode/skills/xkb-planner/SKILL.md` |
+| Devin | `~/.config/devin/skills/xkb-planner/SKILL.md` |
+
+三个 Skill 都写到各自 Agent 的同级目录，即 `xkb-planner`、`xkb-project-workflow`、`xkb-self-dogfooding` 各一份。
+
+- 命令对三个 Agent 都执行，目录不存在时自动创建；重复执行即更新到当前 `xkb` 版本，同目录下的其他 Skill 不动。
+- 目前暂只支持 OMP / OpenCode / Devin 这三个 Agent；其他 Agent 仍按 5.4 手动复制目录。
+- 安装后重启 Agent 使其重新扫描技能目录，再用“把当前需求拆成 xkb 任务卡”验证命中 `xkb-planner`（自检见 5.6）。
+
+### 5.6 自检
 
 MCP 握手与工具枚举（不需要 xissue、不会写卡片）：
 
