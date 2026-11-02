@@ -81,8 +81,10 @@ func run(args []string) error {
 		return cmdUpdate(args[1:])
 	case "mcp":
 		return cmdMCP(ctx, st, args[1:])
+	case "skill", "skills":
+		return cmdSkill(args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (want daemon, server, service, spec, add, ready, list, show, retry, archive, delete, logs, cancel, mcp, update, version)", args[0])
+		return fmt.Errorf("unknown command %q (want daemon, server, service, spec, add, ready, list, show, retry, archive, delete, logs, cancel, mcp, skill, update, version)", args[0])
 	}
 }
 
@@ -180,4 +182,17 @@ func cmdMCP(ctx context.Context, st *store.Store, args []string) error {
 		return err
 	}
 	return mcp.New(st).Serve(ctx, os.Stdin, os.Stdout)
+}
+
+// cmdSkill installs the built-in skills into omp, opencode, and devin; those
+// are the only supported agents, so there is no flag to pick one.
+func cmdSkill(args []string) error {
+	if len(args) == 0 || args[0] != "install" {
+		return fmt.Errorf("usage: xkb skill install (supported agents: omp, opencode, devin)")
+	}
+	paths, err := mcp.InstallSkills()
+	for _, p := range paths {
+		fmt.Println("registered:", p)
+	}
+	return err
 }
