@@ -392,3 +392,39 @@ func TestRunEvents(t *testing.T) {
 		t.Fatalf("events: %+v", events)
 	}
 }
+
+func TestProjectTodoAndTestPlan(t *testing.T) {
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/projects/6/todos":
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			json.NewEncoder(w).Encode(ProjectTodo{
+				ID: 10, ProjectID: 6, Title: body["title"].(string), Status: "open",
+			})
+		case r.Method == "POST" && r.URL.Path == "/api/projects/6/test-plans":
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			json.NewEncoder(w).Encode(ProjectTestPlan{
+				ID: 20, ProjectID: 6, Title: body["title"].(string), Status: "open",
+			})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	todo, err := client.CreateProjectTodo(context.Background(), 6, "task 1", "detail 1")
+	if err != nil {
+		t.Fatalf("create todo: %v", err)
+	}
+	if todo.ID != 10 || todo.Title != "task 1" {
+		t.Fatalf("todo: %+v", todo)
+	}
+
+	plan, err := client.CreateProjectTestPlan(context.Background(), 6, "regression plan", "verify step")
+	if err != nil {
+		t.Fatalf("create test plan: %v", err)
+	}
+	if plan.ID != 20 || plan.Title != "regression plan" {
+		t.Fatalf("test plan: %+v", plan)
+	}
+}

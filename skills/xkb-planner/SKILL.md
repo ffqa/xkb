@@ -95,6 +95,49 @@ xkb skill install
 
 `auto_ready: true` 会在通过五要素门禁后直接把卡片提升为 `todo`，由持锁引擎（`xkb server` / `xkb daemon` / 服务）拉起 Worktree 执行；`auto_ready` 省略或 `false` 时卡片停在 `backlog`，等人工确认。
 
+### 第四步：主动创建 xissue Project Todolist
+
+在 Spec 创建好并将任务卡片录入 xkb 之后，**必须主动将拆解出的任务同步写入 xissue 的项目 TODO 清单**。
+这保证了需求在项目视图、Web 界面与团队协作中具备统一清单与全局跟踪。
+
+调用 MCP 工具 `xissue_add_todos`（批量创建）或 `xissue_add_todo`（单条创建）：
+
+```json
+{
+  "projectId": 6,
+  "items": [
+    {
+      "title": "xkb-018: 实现 xkb reopen 命令行与打回反馈",
+      "detail": "touches: cmd/xkb/main.go, internal/cli/cli.go\nacceptance: 支持 feedback/file 参数打回已完成卡片为 todo",
+      "sourceKey": "xkb-018"
+    }
+  ]
+}
+```
+*注：`projectId` 可根据项目配置传入，或省略使用当前默认项目；`sourceKey` 建议对应生成的卡片 ID。*
+
+---
+
+## 阶段闭环：开发完成后追加 TestPlan
+
+当卡片执行完成并通过两阶段验收（Gate 门禁 + AI Review）合入主干后，**必须主动将本次改动的回归验证用例追加到 xissue 的 Project TestPlan 中**，形成工程级的持久化测试资产：
+
+调用 MCP 工具 `xissue_add_test_plans`（批量）或 `xissue_add_test_plan`（单条）：
+
+```json
+{
+  "projectId": 6,
+  "items": [
+    {
+      "title": "回归测试 xkb reopen 命令行功能",
+      "detail": "1. 执行 xkb reopen xkb-018 --feedback \"测试打回意见\"\n2. 校验卡片状态变回 todo，且卡片 Goal 中成功追加 [打回反馈] 内容\n3. 执行 go test -count=1 ./internal/cli/... 确保单元测试全绿",
+      "sourceKey": "xkb-018"
+    }
+  ]
+}
+```
+*注：重名的测试计划会被系统自动编排为 `x1`, `x2`... 形成连续的测试追踪；后续发布回归或排查问题时可随时执行。*
+
 ## 避坑指南
 
 - 不要为同一个文件拆出两个无依赖的并行卡片，`touches` 冲突会让后置卡片一直挂起。

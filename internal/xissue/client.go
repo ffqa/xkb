@@ -471,3 +471,59 @@ func (c *Client) RunEvents(ctx context.Context, runID int64) ([]RunEvent, error)
 	}
 	return events, nil
 }
+
+// ProjectTodo represents an item on a project's TODO checklist in xissue.
+type ProjectTodo struct {
+	ID        int64     `json:"id"`
+	ProjectID int64     `json:"projectId"`
+	Title     string    `json:"title"`
+	Detail    string    `json:"detail"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// CreateProjectTodo creates a TODO item on the project's checklist.
+func (c *Client) CreateProjectTodo(ctx context.Context, projectID int64, title, detail string) (*ProjectTodo, error) {
+	data, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/projects/%d/todos", projectID), map[string]any{
+		"title":  title,
+		"detail": detail,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out ProjectTodo
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decode todo: %w", err)
+	}
+	return &out, nil
+}
+
+// ProjectTestPlan represents a test plan / regression item for a project in xissue.
+type ProjectTestPlan struct {
+	ID          int64     `json:"id"`
+	ProjectID   int64     `json:"projectId"`
+	Title       string    `json:"title"`
+	BaseTitle   string    `json:"baseTitle"`
+	RepeatIndex int       `json:"repeatIndex"`
+	Detail      string    `json:"detail"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+// CreateProjectTestPlan creates a test plan item for the project.
+func (c *Client) CreateProjectTestPlan(ctx context.Context, projectID int64, title, detail string) (*ProjectTestPlan, error) {
+	data, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/projects/%d/test-plans", projectID), map[string]any{
+		"title":  title,
+		"detail": detail,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out ProjectTestPlan
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decode test plan: %w", err)
+	}
+	return &out, nil
+}
