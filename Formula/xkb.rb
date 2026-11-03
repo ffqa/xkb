@@ -1,26 +1,26 @@
 class Xkb < Formula
   desc "Spec splitter, conflict-aware kanban scheduler and two-stage verifier"
   homepage "https://github.com/ffqa/xkb"
-  version "0.1.6"
+  version "0.1.7"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/ffqa/xkb/releases/download/v0.1.6/xkb-v0.1.6-darwin-arm64.tar.gz"
-      sha256 "4bdb327ae675461b0ab3c35a269e949306d6fa8baa925dacb10d29d64bac296d"
+      url "https://github.com/ffqa/xkb/releases/download/v0.1.7/xkb-v0.1.7-darwin-arm64.tar.gz"
+      sha256 "58b48811a32962b9e0f15b8836defcb01a563b11a6cace189925884c3127744a"
     else
-      url "https://github.com/ffqa/xkb/releases/download/v0.1.6/xkb-v0.1.6-darwin-amd64.tar.gz"
-      sha256 "6a4b51bdf6dd3d67e7258b630976af4eac5551637a9ea642541ef8ee50f5c9c4"
+      url "https://github.com/ffqa/xkb/releases/download/v0.1.7/xkb-v0.1.7-darwin-amd64.tar.gz"
+      sha256 "77ee949f5eae2f6b78d202e6ba46033d0a130dac8320422f5d96b8fb21bf6828"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/ffqa/xkb/releases/download/v0.1.6/xkb-v0.1.6-linux-arm64.tar.gz"
-      sha256 "7c09c92341c9bcd184fbc4e6bb4783e890b60998a8e08e9e74c5a311f093245b"
+      url "https://github.com/ffqa/xkb/releases/download/v0.1.7/xkb-v0.1.7-linux-arm64.tar.gz"
+      sha256 "984efd0ce5cea8cbead5c5d45b651ca47866736c03aadb59723934440bcdb7d8"
     else
-      url "https://github.com/ffqa/xkb/releases/download/v0.1.6/xkb-v0.1.6-linux-amd64.tar.gz"
-      sha256 "5efae380506a4fdda17bdc1f55447d6821e982e8dafc26ec5527aaeef0c16c55"
+      url "https://github.com/ffqa/xkb/releases/download/v0.1.7/xkb-v0.1.7-linux-amd64.tar.gz"
+      sha256 "e2fa4992f8e9ff0ec908349673805ec3dde44d8a5a83e0fbe27c9da512cb2b54"
     end
   end
 
