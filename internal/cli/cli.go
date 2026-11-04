@@ -71,6 +71,14 @@ func SplitList(s string) []string {
 	return out
 }
 
+// gateLimits uses the engine config when present, otherwise documented defaults.
+func gateLimits(eng *engine.Engine) gate.Limits {
+	if eng != nil && eng.Config != nil {
+		return eng.Config.GateLimits()
+	}
+	return gate.DefaultLimits()
+}
+
 func readBody(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -210,12 +218,14 @@ func ready(ctx context.Context, st *store.Store, eng *engine.Engine, args []stri
 			failed++
 			continue
 		}
-		if err := gate.ValidateTodoGate(card); err != nil {
+		if err := gate.ValidateTodoGateWithLimits(card, gateLimits(eng)); err != nil {
 			fmt.Fprintf(out, "%s: %v\n", id, err)
 			failed++
 			continue
 		}
 		card.Status = store.StatusTodo
+		card.WaitReason = ""
+		card.WaitSince = nil
 		if err := st.UpdateCard(ctx, card); err != nil {
 			fmt.Fprintf(out, "%s: %v\n", id, err)
 			failed++
@@ -295,15 +305,36 @@ func list(ctx context.Context, st *store.Store, eng *engine.Engine, args []strin
 		return printJSON(out, cards)
 	}
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tPRIO\tSTATUS\tPROJECT\tAGENT\tRETRY\tTITLE")
+	fmt.Fprintln(w, "ID\tPRIO\tSTATUS\tWAIT\tPROJECT\tAGENT\tRETRY\tTITLE")
 	for _, c := range cards {
 		projName := filepath.Base(c.ProjectPath)
 		if projName == "" || projName == "." {
 			projName = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", c.ID, c.Priority, c.Status, projName, c.ExecAgent, c.RetryCount, c.Title)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n", c.ID, c.Priority, c.Status, waitLabel(c), projName, c.ExecAgent, c.RetryCount, c.Title)
 	}
 	return w.Flush()
+}
+
+func waitLabel(c *store.Card) string {
+	if c.WaitReason == "" {
+		return "-"
+	}
+	if c.WaitSince == nil {
+		return truncateLine(c.WaitReason, 48)
+	}
+	minutes := int(time.Since(*c.WaitSince).Minutes())
+	if minutes < 0 {
+		minutes = 0
+	}
+	return truncateLine(fmt.Sprintf("%dm %s", minutes, c.WaitReason), 48)
+}
+
+func stampOrDash(t *time.Time) string {
+	if t == nil {
+		return "-"
+	}
+	return t.Local().Format("01-02 15:04")
 }
 
 // Show prints one card and its review records.
@@ -337,6 +368,9 @@ func Show(ctx context.Context, st *store.Store, args []string, out io.Writer) er
 	fmt.Fprintf(out, "touches=%s depends_on=%s\n", strings.Join(card.Touches, ","), strings.Join(card.DependsOn, ","))
 	fmt.Fprintf(out, "verify=%s\n", card.VerifyCmd)
 	fmt.Fprintf(out, "exec=%s/%s reviewer=%s run=%d sha=%s\n", card.ExecAgent, card.ExecModel, card.ReviewAgent, card.XIssueRunID, card.LastReviewedSHA)
+	if card.WaitReason != "" {
+		fmt.Fprintf(out, "waiting=%s since=%s\n", waitLabel(card), stampOrDash(card.WaitSince))
+	}
 	fmt.Fprintf(out, "goal:\n%s\nout_of_scope:\n%s\nacceptance:\n%s\n", card.Goal, card.OutOfScope, card.Acceptance)
 	if card.LastError != "" {
 		fmt.Fprintf(out, "last_error:\n%s\n", card.LastError)
@@ -362,6 +396,8 @@ func Retry(ctx context.Context, st *store.Store, args []string, out io.Writer) e
 		card.LastError = ""
 		card.LastReviewedSHA = ""
 		card.XIssueRunID = 0
+		card.WaitReason = ""
+		card.WaitSince = nil
 		if err := st.UpdateCard(ctx, card); err != nil {
 			return err
 		}
@@ -410,6 +446,8 @@ func Reopen(ctx context.Context, st *store.Store, eng *engine.Engine, args []str
 		card.XIssueRunID = 0
 		card.StartedAt = nil
 		card.FinishedAt = nil
+		card.WaitReason = ""
+		card.WaitSince = nil
 		if fbText != "" {
 			card.Goal = strings.TrimSpace(card.Goal) + "\n\n[打回反馈]\n" + fbText
 		}

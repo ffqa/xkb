@@ -84,7 +84,7 @@ func run(args []string) error {
 	case "update":
 		return cmdUpdate(args[1:])
 	case "mcp":
-		return cmdMCP(ctx, st, args[1:])
+		return cmdMCP(ctx, st, cfg, args[1:])
 	case "skill", "skills":
 		return cmdSkill(args[1:])
 	default:
@@ -174,7 +174,7 @@ func serve(ctx context.Context, eng *engine.Engine, srv *server.Server, ln net.L
 	return err
 }
 
-func cmdMCP(ctx context.Context, st *store.Store, args []string) error {
+func cmdMCP(ctx context.Context, st *store.Store, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	install := fs.Bool("install", false, "register xkb mcp in local agent configs")
 	fs.Parse(args)
@@ -185,7 +185,7 @@ func cmdMCP(ctx context.Context, st *store.Store, args []string) error {
 		}
 		return err
 	}
-	return mcp.New(st).Serve(ctx, os.Stdin, os.Stdout)
+	return mcp.New(st, cfg).Serve(ctx, os.Stdin, os.Stdout)
 }
 
 // cmdSkill installs the built-in skills into omp, opencode, and devin; those

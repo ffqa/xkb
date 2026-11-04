@@ -86,6 +86,8 @@ func (e *Engine) VerifyCard(ctx context.Context, cardID string) error {
 			e.recordReview(ctx, card, round, "gate_cmd", "gate", baseSHA, "", "FAIL", findings)
 			card.Status = store.StatusBlocked
 			card.LastError = reason
+			card.WaitReason = reason
+			card.WaitSince = nil
 			if uerr := e.Store.UpdateCard(ctx, card); uerr != nil {
 				return uerr
 			}
@@ -121,8 +123,20 @@ func (e *Engine) VerifyCard(ctx context.Context, cardID string) error {
 	}
 	if worktree == "" {
 		gateProblems = append(gateProblems, "无法定位 worktree，不能执行验收命令")
-	} else if out, err := e.runVerify(ctx, worktree, card.VerifyCmd); err != nil {
-		gateProblems = append(gateProblems, fmt.Sprintf("验收命令失败: %v\n%s", err, out))
+	} else {
+		maxFiles, maxLines := e.diffBudget(card)
+		if len(files) > maxFiles || totalLines > maxLines {
+			gateProblems = append(gateProblems,
+				fmt.Sprintf("改动规模超出 %s 卡片预算: %d 文件 / %d 行 > %d 文件 / %d 行；请把本卡拆成更小的卡片，或把改动缩到最小",
+					card.Size, len(files), totalLines, maxFiles, maxLines))
+		}
+		// Do not spend time running verify for an oversized diff: the card
+		// already failed the zero-token scope contract.
+		if len(gateProblems) == 0 {
+			if out, err := e.runVerify(ctx, worktree, card.VerifyCmd); err != nil {
+				gateProblems = append(gateProblems, fmt.Sprintf("验收命令失败: %v\n%s", err, out))
+			}
+		}
 	}
 	gateFindings := findingsForProblems(gateProblems)
 	e.recordReview(ctx, card, round, "gate_cmd", "gate", baseSHA, headSHA, verdict(gateProblems), gateFindings)
@@ -165,6 +179,8 @@ func (e *Engine) VerifyCard(ctx context.Context, cardID string) error {
 		e.recordReview(ctx, card, round, "ai_review", agent.Agent, baseSHA, headSHA, "FAIL", findings)
 		card.Status = store.StatusBlocked
 		card.LastError = reason
+		card.WaitReason = reason
+		card.WaitSince = nil
 		if uerr := e.Store.UpdateCard(ctx, card); uerr != nil {
 			return uerr
 		}
@@ -189,6 +205,16 @@ func (e *Engine) VerifyCard(ctx context.Context, cardID string) error {
 	}
 	card.LastReviewedSHA = headSHA
 	return e.submit(ctx, card, baseSHA, headSHA)
+}
+
+func (e *Engine) diffBudget(card *store.Card) (files, lines int) {
+	if e.Config != nil {
+		return e.Config.DiffBudget(card.Size)
+	}
+	if card.Size == "large" {
+		return 4, 300
+	}
+	return 2, 120
 }
 
 func (e *Engine) runVerify(ctx context.Context, dir, command string) (string, error) {
@@ -312,6 +338,8 @@ func (e *Engine) failCard(ctx context.Context, card *store.Card, reason, stage, 
 	card.LastError = reason
 	if card.RetryCount >= 2 {
 		card.Status = store.StatusBlocked
+		card.WaitReason = reason
+		card.WaitSince = nil
 		if err := e.Store.UpdateCard(ctx, card); err != nil {
 			return err
 		}
@@ -326,6 +354,8 @@ func (e *Engine) failCard(ctx context.Context, card *store.Card, reason, stage, 
 	if err := e.Client.SendMessage(ctx, card.XIssueRunID, msg); err != nil {
 		card.Status = store.StatusBlocked
 		card.LastError = reason + "\n唤醒热会话失败: " + err.Error()
+		card.WaitReason = card.LastError
+		card.WaitSince = nil
 		if uerr := e.Store.UpdateCard(ctx, card); uerr != nil {
 			return uerr
 		}
@@ -333,6 +363,7 @@ func (e *Engine) failCard(ctx context.Context, card *store.Card, reason, stage, 
 		return nil
 	}
 	card.Status = store.StatusRunning
+	clearWait(card)
 	if err := e.Store.UpdateCard(ctx, card); err != nil {
 		return err
 	}
@@ -359,6 +390,7 @@ func (e *Engine) submit(ctx context.Context, card *store.Card, base, head string
 	card.Status = store.StatusDone
 	card.FinishedAt = &now
 	card.LastError = ""
+	clearWait(card)
 	if err := e.Store.UpdateCard(ctx, card); err != nil {
 		return err
 	}

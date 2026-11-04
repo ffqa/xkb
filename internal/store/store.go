@@ -50,6 +50,8 @@ type Card struct {
 	RetryCount        int        `json:"retryCount"`
 	LastReviewedSHA   string     `json:"lastReviewedSha"`
 	LastError         string     `json:"lastError"`
+	WaitReason        string     `json:"waitReason"`
+	WaitSince         *time.Time `json:"waitSince,omitempty"`
 	CreatedAt         time.Time  `json:"createdAt"`
 	StartedAt         *time.Time `json:"startedAt,omitempty"`
 	FinishedAt        *time.Time `json:"finishedAt,omitempty"`
@@ -160,6 +162,8 @@ CREATE TABLE IF NOT EXISTS cards (
     retry_count        INTEGER NOT NULL DEFAULT 0,
     last_reviewed_sha  TEXT NOT NULL DEFAULT '',
     last_error         TEXT NOT NULL DEFAULT '',
+    wait_reason        TEXT NOT NULL DEFAULT '',
+    wait_since         DATETIME,
     created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at         DATETIME,
     finished_at        DATETIME,
@@ -183,8 +187,47 @@ CREATE INDEX IF NOT EXISTS idx_review_runs_card ON review_runs(card_id);
 `
 
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	// CREATE TABLE IF NOT EXISTS does not add columns to an existing database.
+	// Keep runtime upgrades additive so old ~/.xkb/xkb.db files keep working.
+	for _, col := range []struct{ name, ddl string }{
+		{"wait_reason", "TEXT NOT NULL DEFAULT ''"},
+		{"wait_since", "DATETIME"},
+	} {
+		exists, err := s.hasColumn("cards", col.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := s.db.Exec("ALTER TABLE cards ADD COLUMN " + col.name + " " + col.ddl); err != nil {
+			return fmt.Errorf("add cards.%s: %w", col.name, err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) hasColumn(table, column string) (bool, error) {
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func now() time.Time { return time.Now().UTC() }
@@ -320,14 +363,15 @@ func (s *Store) CreateCard(ctx context.Context, card *Card) (*Card, error) {
 		`INSERT INTO cards(id, spec_id, project_path, xissue_proj, xissue_issue_id, xissue_run_id,
 		 title, priority, size, security_sensitive, status, depends_on_json, touches_json,
 		 verify_cmd, goal, out_of_scope, acceptance, exec_agent, exec_model, review_agent,
-		 retry_count, last_reviewed_sha, last_error, created_at, started_at, finished_at, archived_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 retry_count, last_reviewed_sha, last_error, wait_reason, wait_since,
+		 created_at, started_at, finished_at, archived_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		card.ID, card.SpecID, card.ProjectPath, card.XIssueProj, card.XIssueIssueID, card.XIssueRunID,
 		card.Title, card.Priority, card.Size, boolInt(card.SecuritySensitive), card.Status,
 		jsonList(card.DependsOn), jsonList(card.Touches), card.VerifyCmd, card.Goal,
 		card.OutOfScope, card.Acceptance, card.ExecAgent, card.ExecModel, card.ReviewAgent,
-		card.RetryCount, card.LastReviewedSHA, card.LastError, ts(card.CreatedAt),
-		nullableTS(card.StartedAt), nullableTS(card.FinishedAt), nullableTS(card.ArchivedAt))
+		card.RetryCount, card.LastReviewedSHA, card.LastError, card.WaitReason, nullableTS(card.WaitSince),
+		ts(card.CreatedAt), nullableTS(card.StartedAt), nullableTS(card.FinishedAt), nullableTS(card.ArchivedAt))
 	if err != nil {
 		return nil, err
 	}
@@ -351,18 +395,20 @@ func boolInt(b bool) int {
 const cardCols = `id, spec_id, project_path, xissue_proj, xissue_issue_id, xissue_run_id,
  title, priority, size, security_sensitive, status, depends_on_json, touches_json,
  verify_cmd, goal, out_of_scope, acceptance, exec_agent, exec_model, review_agent,
- retry_count, last_reviewed_sha, last_error, created_at, started_at, finished_at, archived_at`
+ retry_count, last_reviewed_sha, last_error, wait_reason, wait_since,
+ created_at, started_at, finished_at, archived_at`
 
 func scanCard(sc interface{ Scan(...any) error }) (*Card, error) {
 	var c Card
 	var sec int
 	var depends, touches string
 	var created string
-	var started, finished, archived sql.NullString
+	var started, finished, archived, waitSince sql.NullString
 	err := sc.Scan(&c.ID, &c.SpecID, &c.ProjectPath, &c.XIssueProj, &c.XIssueIssueID, &c.XIssueRunID,
 		&c.Title, &c.Priority, &c.Size, &sec, &c.Status, &depends, &touches,
 		&c.VerifyCmd, &c.Goal, &c.OutOfScope, &c.Acceptance, &c.ExecAgent, &c.ExecModel, &c.ReviewAgent,
-		&c.RetryCount, &c.LastReviewedSHA, &c.LastError, &created, &started, &finished, &archived)
+		&c.RetryCount, &c.LastReviewedSHA, &c.LastError, &c.WaitReason, &waitSince,
+		&created, &started, &finished, &archived)
 	if err != nil {
 		return nil, err
 	}
@@ -373,6 +419,7 @@ func scanCard(sc interface{ Scan(...any) error }) (*Card, error) {
 	c.StartedAt = parseTS(started)
 	c.FinishedAt = parseTS(finished)
 	c.ArchivedAt = parseTS(archived)
+	c.WaitSince = parseTS(waitSince)
 	return &c, nil
 }
 
@@ -391,13 +438,14 @@ func (s *Store) UpdateCard(ctx context.Context, card *Card) error {
 		`UPDATE cards SET spec_id=?, project_path=?, xissue_proj=?, xissue_issue_id=?, xissue_run_id=?,
 		 title=?, priority=?, size=?, security_sensitive=?, status=?, depends_on_json=?, touches_json=?,
 		 verify_cmd=?, goal=?, out_of_scope=?, acceptance=?, exec_agent=?, exec_model=?, review_agent=?,
-		 retry_count=?, last_reviewed_sha=?, last_error=?, started_at=?, finished_at=?, archived_at=?
+		 retry_count=?, last_reviewed_sha=?, last_error=?, wait_reason=?, wait_since=?,
+		 started_at=?, finished_at=?, archived_at=?
 		 WHERE id=?`,
 		card.SpecID, card.ProjectPath, card.XIssueProj, card.XIssueIssueID, card.XIssueRunID,
 		card.Title, card.Priority, card.Size, boolInt(card.SecuritySensitive), card.Status,
 		jsonList(card.DependsOn), jsonList(card.Touches), card.VerifyCmd, card.Goal,
 		card.OutOfScope, card.Acceptance, card.ExecAgent, card.ExecModel, card.ReviewAgent,
-		card.RetryCount, card.LastReviewedSHA, card.LastError,
+		card.RetryCount, card.LastReviewedSHA, card.LastError, card.WaitReason, nullableTS(card.WaitSince),
 		nullableTS(card.StartedAt), nullableTS(card.FinishedAt), nullableTS(card.ArchivedAt), card.ID)
 	if err != nil {
 		return err
@@ -482,7 +530,7 @@ func (s *Store) ListCards(ctx context.Context, filter CardFilter) ([]*Card, erro
 // daemon scheduler cannot dispatch the same card twice.
 func (s *Store) ClaimTodo(ctx context.Context, id string) (bool, error) {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE cards SET status=?, started_at=? WHERE id=? AND status=?`,
+		`UPDATE cards SET status=?, started_at=?, wait_reason='', wait_since=NULL WHERE id=? AND status=?`,
 		StatusRunning, ts(now()), id, StatusTodo)
 	if err != nil {
 		return false, err

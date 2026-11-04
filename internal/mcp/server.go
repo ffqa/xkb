@@ -8,18 +8,21 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
+	"github.com/xpier/xkb/internal/config"
 	"github.com/xpier/xkb/internal/gate"
 	"github.com/xpier/xkb/internal/store"
 )
 
 // Server exposes xkb tools over a line-delimited JSON-RPC stream.
 type Server struct {
-	Store *store.Store
+	Store  *store.Store
+	Config *config.Config
 }
 
 // New returns a server backed by st.
-func New(st *store.Store) *Server { return &Server{Store: st} }
+func New(st *store.Store, cfg *config.Config) *Server { return &Server{Store: st, Config: cfg} }
 
 type rpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -268,9 +271,23 @@ func (s *Server) createCards(ctx context.Context, args json.RawMessage) (string,
 	}
 	created := []string{}
 	problems := []string{}
+	limits := s.gateLimits()
 	for _, ci := range in.Cards {
 		if len(ci.Touches) == 0 {
 			problems = append(problems, fmt.Sprintf("%s: touches must not be empty", ci.Title))
+			continue
+		}
+		size := ci.Size
+		if size == "" {
+			size = "small"
+		}
+		limit := limits.SmallMaxTouches
+		if size == "large" {
+			limit = limits.LargeMaxTouches
+		}
+		if limit > 0 && len(ci.Touches) > limit {
+			problems = append(problems, fmt.Sprintf("%s: %d touches exceeds %s budget %d; split it into smaller cards",
+				ci.Title, len(ci.Touches), size, limit))
 			continue
 		}
 		var missing []string
@@ -295,10 +312,12 @@ func (s *Server) createCards(ctx context.Context, args json.RawMessage) (string,
 			continue
 		}
 		if ci.AutoReady {
-			if err := gate.ValidateTodoGate(saved); err != nil {
+			if err := gate.ValidateTodoGateWithLimits(saved, limits); err != nil {
 				problems = append(problems, fmt.Sprintf("%s: %v", saved.ID, err))
 			} else {
 				saved.Status = store.StatusTodo
+				saved.WaitReason = ""
+				saved.WaitSince = nil
 				if err := s.Store.UpdateCard(ctx, saved); err != nil {
 					problems = append(problems, fmt.Sprintf("%s: %v", saved.ID, err))
 				}
@@ -318,6 +337,7 @@ func (s *Server) promote(ctx context.Context, args json.RawMessage) (string, err
 	}
 	promoted := []string{}
 	problems := []string{}
+	limits := s.gateLimits()
 	for _, id := range in.IDs {
 		card, err := s.Store.GetCard(ctx, id)
 		if err != nil {
@@ -328,11 +348,13 @@ func (s *Server) promote(ctx context.Context, args json.RawMessage) (string, err
 			problems = append(problems, fmt.Sprintf("%s: status is %s, want backlog", id, card.Status))
 			continue
 		}
-		if err := gate.ValidateTodoGate(card); err != nil {
+		if err := gate.ValidateTodoGateWithLimits(card, limits); err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", id, err))
 			continue
 		}
 		card.Status = store.StatusTodo
+		card.WaitReason = ""
+		card.WaitSince = nil
 		if err := s.Store.UpdateCard(ctx, card); err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", id, err))
 			continue
@@ -366,6 +388,8 @@ func (s *Server) reopen(ctx context.Context, args json.RawMessage) (string, erro
 	card.XIssueRunID = 0
 	card.StartedAt = nil
 	card.FinishedAt = nil
+	card.WaitReason = ""
+	card.WaitSince = nil
 	// shortcut: feedback lives in LastError; the engine clears it on dispatch,
 	// so later runs carry no stale note. Add a dedicated column if it must persist.
 	card.LastError = strings.TrimSpace(in.Feedback)
@@ -386,6 +410,9 @@ func (s *Server) board(ctx context.Context) (string, error) {
 	}
 	columns := map[string][]map[string]any{}
 	counts := map[string]int{}
+	stalled := 0
+	stallAfter := s.stallMinutes()
+	waiting := []map[string]any{}
 	for _, c := range cards {
 		counts[c.Status]++
 		entry := map[string]any{
@@ -394,6 +421,21 @@ func (s *Server) board(ctx context.Context) (string, error) {
 		}
 		if c.LastError != "" {
 			entry["lastError"] = c.LastError
+		}
+		if c.WaitReason != "" {
+			minutes := waitMinutes(c)
+			entry["waitReason"] = c.WaitReason
+			entry["waitingMinutes"] = minutes
+			entry["stalled"] = c.WaitSince != nil && minutes >= stallAfter
+			if c.Status == store.StatusTodo {
+				waiting = append(waiting, map[string]any{
+					"id": c.ID, "status": c.Status, "reason": c.WaitReason,
+					"minutes": minutes, "stalled": c.WaitSince != nil && minutes >= stallAfter,
+				})
+				if c.WaitSince != nil && minutes >= stallAfter {
+					stalled++
+				}
+			}
 		}
 		columns[c.Status] = append(columns[c.Status], entry)
 	}
@@ -411,7 +453,35 @@ func (s *Server) board(ctx context.Context) (string, error) {
 		}
 		completion = append(completion, map[string]any{"specId": sp.ID, "title": sp.Title, "total": total, "done": done})
 	}
-	return marshal(map[string]any{"columns": columns, "counts": counts, "specs": completion}), nil
+	return marshal(map[string]any{
+		"columns": columns, "counts": counts, "specs": completion,
+		"waiting": waiting, "stalled": stalled,
+	}), nil
+}
+
+func (s *Server) gateLimits() gate.Limits {
+	if s.Config != nil {
+		return s.Config.GateLimits()
+	}
+	return gate.DefaultLimits()
+}
+
+func (s *Server) stallMinutes() int {
+	if s.Config != nil && s.Config.TodoStallMinutes > 0 {
+		return s.Config.TodoStallMinutes
+	}
+	return 15
+}
+
+func waitMinutes(c *store.Card) int {
+	if c.WaitSince == nil {
+		return 0
+	}
+	minutes := int(time.Since(*c.WaitSince).Minutes())
+	if minutes < 0 {
+		return 0
+	}
+	return minutes
 }
 
 func marshal(v any) string {

@@ -29,6 +29,7 @@ func TestValidateTodoGateRejects(t *testing.T) {
 		"size":         func(c *store.Card) { c.Size = "medium" },
 		"project":      func(c *store.Card) { c.ProjectPath = "/definitely/not/here" },
 		"no touches":   func(c *store.Card) { c.Touches = nil },
+		"too many":     func(c *store.Card) { c.Touches = []string{"a", "b", "c"} },
 		"absolute":     func(c *store.Card) { c.Touches = []string{"/etc/passwd"} },
 		"dotdot":       func(c *store.Card) { c.Touches = []string{"internal/../../etc"} },
 		"empty verify": func(c *store.Card) { c.VerifyCmd = "  " },
@@ -44,6 +45,25 @@ func TestValidateTodoGateRejects(t *testing.T) {
 				t.Fatalf("expected rejection, got nil")
 			}
 		})
+	}
+}
+
+func TestValidateTodoGateTouchBudget(t *testing.T) {
+	card := validCard(t)
+	card.Size = "large"
+	card.Touches = []string{"a", "b", "c"}
+	if err := ValidateTodoGate(card); err != nil {
+		t.Fatalf("large card with 3 touches should pass: %v", err)
+	}
+	card.Touches = append(card.Touches, "d")
+	if err := ValidateTodoGate(card); err == nil {
+		t.Fatal("large card with 4 touches should be rejected")
+	}
+	card.Size = "small"
+	card.Touches = []string{"a", "b", "c"}
+	limits := Limits{SmallMaxTouches: 3, LargeMaxTouches: 3}
+	if err := ValidateTodoGateWithLimits(card, limits); err != nil {
+		t.Fatalf("custom small budget should allow 3: %v", err)
 	}
 }
 

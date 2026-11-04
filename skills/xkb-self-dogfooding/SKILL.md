@@ -22,6 +22,7 @@ metadata:
 
 - 用 `xkb mcp` 的 stdio JSON-RPC（`initialize` 后 `tools/call`）。`depends_on` 引用前面的真实 ID 时，一张一张创建。
 - 门禁必填：`project_path`、`title`、`priority`、`size`、`touches`、`verify_cmd`、`goal`、`out_of_scope`、`acceptance`，加 `auto_ready: true`。
+- 微卡预算：`small` ≤2 条 `touches` / 2 文件 / 120 行，`large` ≤3 条 / 4 文件 / 300 行；超限会被门禁拒绝或验收打回，先拆卡。
 - 用 `xkb list` 和 `xkb show <id> --json` 核对 ID 与依赖。
 
 ## 与陈旧 TUI 并存

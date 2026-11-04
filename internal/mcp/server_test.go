@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xpier/xkb/internal/store"
 )
@@ -19,7 +20,7 @@ func newServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return New(st)
+	return New(st, nil)
 }
 
 func call(t *testing.T, s *Server, method string, params any) (map[string]any, *rpcError) {
@@ -150,6 +151,36 @@ func TestCreateSpecCardsPromoteAndBoard(t *testing.T) {
 	}
 	if len(boardOut.Specs) != 1 || boardOut.Specs[0]["total"].(float64) != 2 {
 		t.Fatalf("specs: %+v", boardOut.Specs)
+	}
+}
+
+func TestBoardReportsTodoWaitHealth(t *testing.T) {
+	s := newServer(t)
+	old := time.Now().UTC().Add(-20 * time.Minute)
+	_, err := s.Store.CreateCard(context.Background(), &store.Card{
+		ProjectPath: t.TempDir(), Title: "waiting", Status: store.StatusTodo,
+		Touches: []string{"internal/"}, WaitReason: "等待槽位 (5/5)", WaitSince: &old,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, rpcErr := call(t, s, "tools/call", map[string]any{"name": "xkb_board_status", "arguments": map[string]any{}})
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	var out struct {
+		Waiting []map[string]any `json:"waiting"`
+		Stalled int              `json:"stalled"`
+	}
+	json.Unmarshal([]byte(toolText(t, res)), &out)
+	if len(out.Waiting) != 1 || out.Stalled != 1 {
+		t.Fatalf("waiting=%v stalled=%d", out.Waiting, out.Stalled)
+	}
+	if out.Waiting[0]["reason"] != "等待槽位 (5/5)" {
+		t.Fatalf("reason: %v", out.Waiting[0])
+	}
+	if out.Waiting[0]["stalled"] != true {
+		t.Fatalf("stalled flag: %v", out.Waiting[0])
 	}
 }
 

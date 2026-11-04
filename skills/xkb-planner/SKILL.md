@@ -1,7 +1,7 @@
 ---
 name: xkb-planner
-version: 1.0.0
-description: "需求分析与原子任务拆解专家：把粗粒度需求拆成零返工、无路径冲突、自包含验收命令的 xkb 卡片，并通过 xkb MCP（xkb_create_spec、xkb_create_cards）直接写入看板。"
+version: 1.1.0
+description: "需求分析与微卡拆解专家：把粗粒度需求拆成单文件/单行为、可在几分钟内完成、无路径冲突、自包含验收命令的 xkb 微卡，并通过 xkb MCP（xkb_create_spec、xkb_create_cards）直接写入看板。"
 metadata:
   requires:
     bins: ["git"]
@@ -33,9 +33,13 @@ xkb skill install
    - 必须通过 Git 根目录探测（`git rev-parse --show-toplevel`）或当前工作区拿到绝对路径 `project_path`。
    - 所有 Spec 和卡片必须绑定明确的 `project_path`，绝不允许跨项目或路径缺失。
 
-2. **原子化与最小改动**：
-   - 每张卡片只做一件事，代码变动控制在 100~200 行以内。
-   - 规模过大的需求拆成 3~7 张原子卡，按依赖拓扑串联或并联。
+2. **微卡硬约束（拆解失败的最常见原因）**：
+   - 一张卡只做**一个可独立验证的行为变化**，预期执行时间 **2~5 分钟**；写卡前先问“这个 diff 能用一句话说清吗”，不能就继续拆。
+   - **默认 `size: "small"`**：`touches` 最多 **2 条**，改动最多 **2 个文件 / 120 行**。
+   - `size: "large"` 只用于无法再拆的机械迁移：`touches` 最多 **3 条**，改动最多 **4 个文件 / 300 行**；必须在 `out_of_scope` 里说明为什么不能拆。
+   - 禁止把“实现 + 重构 + 补测试 + 写文档”塞进同一张卡。测试随实现放在同一包时，`verify_cmd` 只验证本卡行为；文档单独成卡（`P4`）。
+   - 一个非平凡 Spec 通常拆成 **8~15 张微卡**；如果只拆出 3~5 张，先检查是否漏了边界、错误路径、测试和文档。
+   - 门禁和验收会机械执行这些预算：超 `touches` 的卡无法进入 `todo`，超文件/行数的 diff 会被打回并提示拆卡。
 
 3. **门禁五要素强制齐全**（`xkb_create_cards` 每张卡都必须有，且不含 `TODO` / `<FILL_IN>` 占位符）：
    - `touches`：允许修改的相对路径列表（防冲突与越界，如 `["internal/router/"]`、`["cmd/xkb/main.go"]`）。
@@ -68,6 +72,16 @@ xkb skill install
 - `P2` / `P3`：普通功能开发、前后端联动。
 - `P4`：纯文档、注释、简单补丁（小改动过机械门禁后免 Review）。
 - 依赖通过 `depends_on` 声明；同文件改动用 `depends_on` 串成链，不同文件才并行。
+- **默认全部 `size: "small"`**。不要用 `large` 逃避拆卡；`large` 的预算也只是 4 文件 / 300 行，仍然要求几分钟内完成。
+
+拆解自检（写完每张卡都过一遍）：
+
+- [ ] 这张卡能否在 2~5 分钟内跑完？不能就继续拆。
+- [ ] 是否只改 1~2 个文件、≤ 120 行？超了就拆。
+- [ ] 是否只有一个验收命令、且它只验证本卡行为？
+- [ ] `goal` 是否是一句话可描述的单一行为，而不是“完成某模块”？
+- [ ] 是否把测试/文档/重构混进来了？混了就拆成独立卡。
+- [ ] 同文件的两张卡是否用 `depends_on` 串行，而不是并行撞 `touches`？
 
 ### 第三步：写入看板（Auto-Ready）
 
@@ -79,19 +93,33 @@ xkb skill install
   "project_path": "/abs/path/to/project",
   "cards": [
     {
-      "title": "任务 1",
+      "title": "UserService 增加按邮箱查询方法",
       "priority": "P2",
       "size": "small",
       "touches": ["internal/service/user.go"],
       "verify_cmd": "go test -count=1 ./internal/service/...",
-      "goal": "实现具体的业务逻辑",
-      "out_of_scope": "不修改 DB 表结构",
-      "acceptance": "单测通过且边界用例全覆盖",
+      "goal": "在 UserService 增加 FindByEmail(ctx, email) (*User, error)，仅查询单条",
+      "out_of_scope": "不改 DB schema，不改 HTTP handler，不加重试",
+      "acceptance": "单测覆盖命中与未命中；返回 sql.ErrNoRows 时映射为 nil, nil",
+      "auto_ready": true
+    },
+    {
+      "title": "补充 FindByEmail 未命中单测",
+      "priority": "P3",
+      "size": "small",
+      "touches": ["internal/service/user_test.go"],
+      "verify_cmd": "go test -count=1 ./internal/service/...",
+      "goal": "为 FindByEmail 增加未命中返回 nil, nil 的测试",
+      "out_of_scope": "不改生产代码",
+      "acceptance": "新增 1 个测试用例并通过",
+      "depends_on": ["xkb-001"],
       "auto_ready": true
     }
   ]
 }
 ```
+
+如果一张卡需要同时改 `user.go` 和 `user_test.go`，把它们合成一张卡（≤2 条 touches）也可以；但**不要**再往同一张卡里塞 handler、迁移和文档。
 
 `auto_ready: true` 会在通过五要素门禁后直接把卡片提升为 `todo`，由持锁引擎（`xkb server` / `xkb daemon` / 服务）拉起 Worktree 执行；`auto_ready` 省略或 `false` 时卡片停在 `backlog`，等人工确认。
 
@@ -140,8 +168,10 @@ xkb skill install
 
 ## 避坑指南
 
-- 不要为同一个文件拆出两个无依赖的并行卡片，`touches` 冲突会让后置卡片一直挂起。
+- **不要交“大卡”**：超过 2 个 `touches`（small）或 120 行预期改动，先拆。引擎会在验收阶段按 `smallMaxDiffFiles/smallMaxDiffLines` 机械打回。
+- 不要为同一个文件拆出两个无依赖的并行卡片，`touches` 冲突会让后置卡片一直挂起；看板会显示 `路径冲突: xkb-xxx`。
+- 依赖未完成、上游阻塞、槽位满时，卡不会消失：`xkb list` 的 `WAIT` 列和 `xkb_board_status.waiting` 会给出原因与等待分钟数；`Stalled` 表示超过 `todoStallMinutes`。
 - `touches` 必须是相对路径：不能以 `/` 开头、不能含 `..`、不能是仓库根 `.`。
-- 前置卡片还没有真实 ID 时，先创建第一张、拿到 ID，再在后续卡片的 `depends_on` 中引用。
+- 前置卡片还没有真实 ID 时，先创建第一张、拿到 ID，再在后续卡片的 `depends_on` 中引用。未知依赖会被调度器直接 `blocked`，并提示修正。
 - `verify_cmd` 必须能在 Worktree 内非交互执行；不要写需要人工输入、联网下载大包或修改全局环境的命令。
 - 不把“让 Agent 自己流转看板/手动合并”写进 goal：流转由引擎负责。

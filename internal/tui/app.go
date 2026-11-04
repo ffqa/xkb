@@ -48,6 +48,8 @@ type Model struct {
 	cols     map[string][]*store.Card
 	blocked  int
 	archived int
+	waiting  int
+	stalled  int
 	reviews  []*store.ReviewRun
 	col      int
 	row      int
@@ -187,6 +189,11 @@ func (m *Model) refresh(ctx context.Context) {
 	}
 	cols := map[string][]*store.Card{}
 	m.blocked, m.archived = 0, 0
+	m.waiting, m.stalled = 0, 0
+	stall := 15 * time.Minute
+	if m.Config != nil && m.Config.TodoStallMinutes > 0 {
+		stall = time.Duration(m.Config.TodoStallMinutes) * time.Minute
+	}
 	for _, c := range cards {
 		cols[c.Status] = append(cols[c.Status], c)
 		switch c.Status {
@@ -194,6 +201,12 @@ func (m *Model) refresh(ctx context.Context) {
 			m.blocked++
 		case store.StatusArchived:
 			m.archived++
+		}
+		if c.WaitReason != "" {
+			m.waiting++
+			if c.WaitSince != nil && time.Since(*c.WaitSince) >= stall {
+				m.stalled++
+			}
 		}
 	}
 	m.cols = cols

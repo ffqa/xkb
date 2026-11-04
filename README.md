@@ -55,9 +55,9 @@ xissue（Worktree 隔离 + ACP Agent + 20 分钟热会话）
 
 `xkb` 只做四件事：
 
-1. **拆解**：把 Spec 落成 `P0~P4`、带 `depends_on`、`touches`、`verify_cmd` 的原子卡。
-2. **调度**：全局最多 5 个槽位，按优先级、依赖满足、同项目路径不重叠自动补位。
-3. **验收**：机械门禁（越界检查 + `verify_cmd` 实测）+ 异构只读 AI 交叉审查。
+1. **拆解**：把 Spec 落成 `P0~P4`、带 `depends_on`、`touches`、`verify_cmd` 的**微卡**（默认 1~2 个文件、≤120 行、2~5 分钟）。
+2. **调度**：全局最多 5 个槽位，按优先级、依赖满足、同项目路径不重叠自动补位；`todo` 等待原因、等待时长和停滞状态自动落库并展示。
+3. **验收**：机械门禁（越界检查 + 规模预算 + `verify_cmd` 实测）+ 异构只读 AI 交叉审查。
 4. **归档**：Done 超量、超时或整个 Spec 完成时自动归档，并同步归档 `xissue` 记录。
 
 ### 1.1 职责边界
@@ -74,9 +74,16 @@ xissue（Worktree 隔离 + ACP Agent + 20 分钟热会话）
 
 - `project_path` 必须是已存在的本地目录；
 - `priority` 必须是 `P0~P4`，`size` 必须是 `small|large`；
-- `touches` 非空，必须是相对路径，不能含 `..`，不能是仓库根 `.`；
+- `touches` 非空，必须是相对路径，不能含 `..`，不能是仓库根 `.`；`small` 最多 2 条、`large` 最多 3 条，超出直接拒绝（请拆卡）；
 - `verify_cmd` 非空，且能在 Worktree 内非交互执行；
 - `goal`、`out_of_scope`、`acceptance` 非空，且不含 `TODO` / `<FILL_IN>` 占位符。
+
+调度器的 `todo` 看护（每 2 秒一轮）会把“为什么还没跑”写进 `wait_reason` / `wait_since`：
+
+- 依赖未完成、上游 `blocked`、`touches` 路径冲突、槽位已满 → 保持 `todo`，显示原因与等待分钟数；
+- 依赖 ID 不存在或依赖成环 → 直接 `blocked`，并给出可操作的 `last_error`，不再静默死在 `todo`；
+- 等待超过 `todoStallMinutes`（默认 15）→ 看板与 `xkb_board_status` 标记 `Stalled`，便于人工介入；
+- 卡片被重新派发、重试或完成时自动清空等待状态。
 
 ### 1.2 看板状态机
 
@@ -111,9 +118,10 @@ blocked ──(xkb retry)──> todo
 在 `xissue` 为该 run 创建的 Worktree 内执行：
 
 1. `CheckWorktreeViolations`：实际改动文件必须落在卡片的 `touches` 内；`AGENTS.md` 永远放行；越界文件直接判定失败并打回。
-2. 在 Worktree 内执行 `verify_cmd`，默认超时 `verifyTimeoutSeconds: 180`；超时或非 0 退出即失败。
+2. **规模预算**：`small` 默认最多 2 个文件 / 120 行，`large` 最多 4 个文件 / 300 行；超限直接打回并提示拆卡，不跑 `verify_cmd`，避免大卡长期占用槽位。
+3. 在 Worktree 内执行 `verify_cmd`，默认超时 `verifyTimeoutSeconds: 180`；超时或非 0 退出即失败。
 
-两项检查的证据合并写入一条 `review_runs` 记录（`stage=gate_cmd`）。
+三项检查的证据合并写入一条 `review_runs` 记录（`stage=gate_cmd`）。
 
 **阶段 2：异构只读 AI 审查**
 
@@ -254,7 +262,7 @@ TUI 通过 SSE 立即刷新，并以 2 秒 tick 兜底；SSE 断开后 5 秒重�
 xkb
 ```
 
-五列固定为 **Backlog / Todo / Running / Review / Done**；头部显示 `Slots: 活跃/上限`、`Blocked` 数、`Archived` 数、`xissue` 地址；底部状态行显示 xissue 在线状态、最近事件和操作结果。
+五列固定为 **Backlog / Todo / Running / Review / Done**；头部显示 `Slots: 活跃/上限`、`Blocked`、`Waiting`、`Stalled`、`Archived` 数与 `xissue` 地址；底部状态行显示 xissue 在线状态、最近事件和操作结果。卡片列表里的等待原因直接来自 `wait_reason`，详情页显示等待起点。
 
 | 按键 | 行为 |
 | :--- | :--- |
@@ -277,7 +285,7 @@ xkb
 | `xkb spec new --project <dir> --title <t> --file <spec.md>` | 保存 Spec，输出 `spec_id` |
 | `xkb add --project <dir> --title <t> [flags]` | 创建 backlog 卡，输出卡 ID |
 | `xkb ready <card-id>...` | 跑门禁并提升到 todo |
-| `xkb list [--status todo,done] [--json]` | 列表；默认表格 |
+| `xkb list [--status todo,done] [--json]` | 列表；默认表格含 `WAIT` 列（等待原因 + 分钟数） |
 | `xkb show <card-id> [--json]` | 卡片详情 + 每轮验收记录 |
 | `xkb logs <card-id> [--tail N] [--json]` | 拉取当前 run 的 `xissue` 事件日志 |
 | `xkb retry <card-id>...` | Blocked -> Todo，清零 retry、`lastReviewedSHA`、`xissue_run_id` |
@@ -337,6 +345,14 @@ largeExecAgent:
   agent: devin
   model: swe-2-high
 
+smallMaxTouches: 2
+largeMaxTouches: 3
+smallMaxDiffFiles: 2
+smallMaxDiffLines: 120
+largeMaxDiffFiles: 4
+largeMaxDiffLines: 300
+todoStallMinutes: 15
+
 verifyTimeoutSeconds: 180
 reviewTimeoutSeconds: 600
 runTimeoutMinutes: 30
@@ -358,6 +374,11 @@ serverURL: http://127.0.0.1:7790
 | `specAgent` | `devin/swe-2-high` | 拆卡阶段使用的 Agent |
 | `smallExecAgent` | `omp` | `size=small` 且非 P0/P1 的编码 Agent |
 | `largeExecAgent` | `devin/swe-2-high` | `size=large` 或 P0/P1 的编码 Agent |
+| `smallMaxTouches` | `2` | `small` 卡允许的 `touches` 上限，超出拒绝入队 |
+| `largeMaxTouches` | `3` | `large` 卡允许的 `touches` 上限 |
+| `smallMaxDiffFiles` / `smallMaxDiffLines` | `2` / `120` | `small` 卡验收时的改动预算 |
+| `largeMaxDiffFiles` / `largeMaxDiffLines` | `4` / `300` | `large` 卡验收时的改动预算 |
+| `todoStallMinutes` | `15` | `todo` 等待超过此值在看板标记 `Stalled` |
 | `verifyTimeoutSeconds` | `180` | `verify_cmd` 超时 |
 | `reviewTimeoutSeconds` | `600` | AI Review 超时 |
 | `runTimeoutMinutes` | `30` | 单 run 超时，超时视为死 run |
@@ -367,7 +388,7 @@ serverURL: http://127.0.0.1:7790
 数据：单文件 SQLite，开启 `WAL` 和 `busy_timeout=5000`，TUI / daemon / server / `xkb mcp` 可并发读写。三张表：
 
 - `specs`：需求文档与关联项目；
-- `cards`：卡片全字段，包括 `touches_json`、`depends_on_json`、`verify_cmd`、`last_reviewed_sha`、`retry_count`、`xissue_run_id` 等；
+- `cards`：卡片全字段，包括 `touches_json`、`depends_on_json`、`verify_cmd`、`last_reviewed_sha`、`retry_count`、`xissue_run_id`、`wait_reason`、`wait_since` 等；
 - `review_runs`：每轮验收证据。
 
 ---
@@ -380,11 +401,11 @@ serverURL: http://127.0.0.1:7790
 
 | Skill | 用途 | 典型触发 |
 | :--- | :--- | :--- |
-| `xkb-planner` | 需求分析、Spec 沉淀、原子卡拆解，直接通过 MCP 写入看板 | “把这个需求拆成任务卡”、“录入 xkb” |
+| `xkb-planner` | 需求分析、Spec 沉淀、微卡拆解（≤2 文件/≤120 行），直接通过 MCP 写入看板 | “把这个需求拆成任务卡”、“录入 xkb” |
 | `xkb-project-workflow` | 开发 xkb 本体：构建、测试、包地图、坑位 | 修改 `internal/engine`、跑 `go test`、问 xkb 结构 |
 | `xkb-self-dogfooding` | 用 xkb 自己的调度器开发 xkb：MCP 写卡、daemon、Reviewer/Diff 陷阱、阻塞卡复验 | “dogfood”、“用 xkb 自己跑” |
 
-`xkb-planner` 的硬约束与看板门禁一致：`touches` 必须是相对路径、每张卡必须自包含 `verify_cmd`、禁止 `TODO` / `<FILL_IN>`、禁止为同一文件拆两个无依赖并行卡。它通过两个 MCP 工具落地：
+`xkb-planner` 的硬约束与看板门禁一致：`touches` 必须是相对路径；`small` 卡最多 2 条 `touches`、`large` 最多 3 条；每张卡必须自包含 `verify_cmd`；禁止 `TODO` / `<FILL_IN>`；禁止为同一文件拆两个无依赖并行卡。默认拆成 **8~15 张微卡**，每张 2~5 分钟、≤2 文件/≤120 行；超预算的 diff 会被机械门禁打回。它通过两个 MCP 工具落地：
 
 ```json
 // xkb_create_spec
@@ -419,7 +440,7 @@ serverURL: http://127.0.0.1:7790
 
 闭环步骤：
 
-1. **拆解**：在 OMP/Devin/OpenCode 中调用 `xkb-planner`，产出 1 个 Spec + 3~7 张原子卡。要并行就拆不同文件；同文件改动用 `depends_on` 串成链。
+1. **拆解**：在 OMP/Devin/OpenCode 中调用 `xkb-planner`，产出 1 个 Spec + **8~15 张微卡**（每张 ≤2 文件/≤120 行，2~5 分钟）。要并行就拆不同文件；同文件改动用 `depends_on` 串成链。
 2. **入列**：卡片 `auto_ready` 直接进 `todo`；未设置则 `xkb ready <id>...`。门禁失败会给出具体原因，不会进入调度。
 3. **派发**：调度器每 2 秒扫描，选优先级最高、依赖满足、无路径冲突的卡，原子认领后调用 `xissue`：
    - 按配置注册/查找项目与仓库；
@@ -510,7 +531,7 @@ xkb archive --all-done
 | `xkb_create_spec` | `project_path`、`title`、`body` | 保存 Spec，返回 `spec_id`；可选 `xissue_proj` |
 | `xkb_create_cards` | `project_path`、`cards` | 批量建卡；`spec_id` 可选；每张卡 `title` 必填，门禁字段不全会拒绝；`auto_ready` 在门禁通过后直接进 `todo` |
 | `xkb_promote_todo` | `ids` | 对 backlog 卡跑门禁并提升到 `todo` |
-| `xkb_board_status` | 无 | 各列卡片、阻塞原因、Spec 完成度 |
+| `xkb_board_status` | 无 | 各列卡片、阻塞原因、Spec 完成度；`waiting`/`stalled` 给出每个待办卡的等待原因与分钟数 |
 
 没有“标记 Done”或“合入”的 MCP 工具：自动流程中 Done 只能由 `xissue` 验收通过后产生，避免 Agent 自审自过。
 

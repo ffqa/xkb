@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/xpier/xkb/internal/gate"
 )
 
 // AgentModel is an xissue agent plus an optional model override.
@@ -29,6 +31,13 @@ type Config struct {
 	SpecAgent            AgentModel `yaml:"specAgent"`
 	SmallExecAgent       AgentModel `yaml:"smallExecAgent"`
 	LargeExecAgent       AgentModel `yaml:"largeExecAgent"`
+	SmallMaxTouches      int        `yaml:"smallMaxTouches"`
+	LargeMaxTouches      int        `yaml:"largeMaxTouches"`
+	SmallMaxDiffFiles    int        `yaml:"smallMaxDiffFiles"`
+	SmallMaxDiffLines    int        `yaml:"smallMaxDiffLines"`
+	LargeMaxDiffFiles    int        `yaml:"largeMaxDiffFiles"`
+	LargeMaxDiffLines    int        `yaml:"largeMaxDiffLines"`
+	TodoStallMinutes     int        `yaml:"todoStallMinutes"`
 	VerifyTimeoutSeconds int        `yaml:"verifyTimeoutSeconds"`
 	ReviewTimeoutSeconds int        `yaml:"reviewTimeoutSeconds"`
 	RunTimeoutMinutes    int        `yaml:"runTimeoutMinutes"`
@@ -63,6 +72,13 @@ func Default() *Config {
 		SpecAgent:            AgentModel{Agent: "devin", Model: "swe-2-high"},
 		SmallExecAgent:       AgentModel{Agent: "omp"},
 		LargeExecAgent:       AgentModel{Agent: "devin", Model: "swe-2-high"},
+		SmallMaxTouches:      2,
+		LargeMaxTouches:      3,
+		SmallMaxDiffFiles:    2,
+		SmallMaxDiffLines:    120,
+		LargeMaxDiffFiles:    4,
+		LargeMaxDiffLines:    300,
+		TodoStallMinutes:     15,
 		VerifyTimeoutSeconds: 180,
 		ReviewTimeoutSeconds: 600,
 		RunTimeoutMinutes:    30,
@@ -132,6 +148,27 @@ func fillDefaults(cfg *Config) {
 	if cfg.LargeExecAgent.Agent == "" {
 		cfg.LargeExecAgent = d.LargeExecAgent
 	}
+	if cfg.SmallMaxTouches <= 0 {
+		cfg.SmallMaxTouches = d.SmallMaxTouches
+	}
+	if cfg.LargeMaxTouches <= 0 {
+		cfg.LargeMaxTouches = d.LargeMaxTouches
+	}
+	if cfg.SmallMaxDiffFiles <= 0 {
+		cfg.SmallMaxDiffFiles = d.SmallMaxDiffFiles
+	}
+	if cfg.SmallMaxDiffLines <= 0 {
+		cfg.SmallMaxDiffLines = d.SmallMaxDiffLines
+	}
+	if cfg.LargeMaxDiffFiles <= 0 {
+		cfg.LargeMaxDiffFiles = d.LargeMaxDiffFiles
+	}
+	if cfg.LargeMaxDiffLines <= 0 {
+		cfg.LargeMaxDiffLines = d.LargeMaxDiffLines
+	}
+	if cfg.TodoStallMinutes <= 0 {
+		cfg.TodoStallMinutes = d.TodoStallMinutes
+	}
 	if cfg.XIssueDataDir == "" {
 		cfg.XIssueDataDir = d.XIssueDataDir
 	}
@@ -141,6 +178,50 @@ func fillDefaults(cfg *Config) {
 	if cfg.ServerURL == "" {
 		cfg.ServerURL = fmt.Sprintf("http://127.0.0.1:%d", cfg.ServerPort)
 	}
+}
+
+// GateLimits converts the configured touch budgets for the admission gate.
+func (c *Config) GateLimits() gate.Limits {
+	limits := gate.DefaultLimits()
+	if c == nil {
+		return limits
+	}
+	if c.SmallMaxTouches > 0 {
+		limits.SmallMaxTouches = c.SmallMaxTouches
+	}
+	if c.LargeMaxTouches > 0 {
+		limits.LargeMaxTouches = c.LargeMaxTouches
+	}
+	return limits
+}
+
+// DiffBudget returns the maximum files and changed lines a card may produce.
+// Oversized diffs are rejected by the mechanical gate so a stale large card
+// cannot monopolise a slot for an hour.
+func (c *Config) DiffBudget(size string) (files, lines int) {
+	files, lines = 2, 120
+	if size == "large" {
+		files, lines = 4, 300
+	}
+	if c == nil {
+		return files, lines
+	}
+	if size == "large" {
+		if c.LargeMaxDiffFiles > 0 {
+			files = c.LargeMaxDiffFiles
+		}
+		if c.LargeMaxDiffLines > 0 {
+			lines = c.LargeMaxDiffLines
+		}
+		return files, lines
+	}
+	if c.SmallMaxDiffFiles > 0 {
+		files = c.SmallMaxDiffFiles
+	}
+	if c.SmallMaxDiffLines > 0 {
+		lines = c.SmallMaxDiffLines
+	}
+	return files, lines
 }
 
 func save(path string, cfg *Config) error {

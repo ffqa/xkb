@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestSpecAndCardLifecycle(t *testing.T) {
@@ -49,6 +50,9 @@ func TestSpecAndCardLifecycle(t *testing.T) {
 	c1.Status = StatusTodo
 	c1.Priority = "P0"
 	c1.RetryCount = 1
+	waitSince := time.Now().UTC().Truncate(time.Second)
+	c1.WaitReason = "等待依赖完成: xkb-000"
+	c1.WaitSince = &waitSince
 	if err := st.UpdateCard(ctx, c1); err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +62,9 @@ func TestSpecAndCardLifecycle(t *testing.T) {
 	}
 	if got.Status != StatusTodo || got.Priority != "P0" || got.RetryCount != 1 {
 		t.Fatalf("update mismatch: %+v", got)
+	}
+	if got.WaitReason != c1.WaitReason || got.WaitSince == nil || !got.WaitSince.Equal(waitSince) {
+		t.Fatalf("wait fields mismatch: %+v", got)
 	}
 
 	cards, err := st.ListCards(ctx, CardFilter{Statuses: []string{StatusTodo}})
@@ -104,6 +111,32 @@ func TestSpecAndCardLifecycle(t *testing.T) {
 	defer st2.Close()
 	if _, err := st2.GetCard(ctx, c1.ID); err != nil {
 		t.Fatalf("persist: %v", err)
+	}
+}
+
+func TestMigrationAddsWaitColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "xkb.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"wait_reason", "wait_since"} {
+		if _, err := st.db.Exec("ALTER TABLE cards DROP COLUMN " + col); err != nil {
+			t.Fatalf("drop %s: %v", col, err)
+		}
+	}
+	st.Close()
+
+	st2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	for _, col := range []string{"wait_reason", "wait_since"} {
+		ok, err := st2.hasColumn("cards", col)
+		if err != nil || !ok {
+			t.Fatalf("%s not migrated: ok=%v err=%v", col, ok, err)
+		}
 	}
 }
 

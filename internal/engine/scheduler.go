@@ -141,13 +141,25 @@ func (e *Engine) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(active) >= e.Config.MaxConcurrent {
+	if err := e.reconcileTodos(ctx, all, active); err != nil {
+		return err
+	}
+	// reconcileTodos can block structurally broken cards; refresh the status
+	// map so dispatch never sees a stale todo.
+	for _, c := range all {
+		status[c.ID] = c.Status
+	}
+	max := e.maxConcurrent()
+	if len(active) >= max {
 		return nil
 	}
 
 	for _, card := range candidates {
-		if len(active) >= e.Config.MaxConcurrent {
+		if len(active) >= max {
 			break
+		}
+		if card.Status != store.StatusTodo {
+			continue
 		}
 		if !dependsSatisfied(card, status) {
 			continue
@@ -187,6 +199,7 @@ func (e *Engine) syncActive(ctx context.Context, all []*store.Card) ([]*store.Ca
 				case "completed":
 					card.Status = store.StatusReview
 					card.LastError = ""
+					clearWait(card)
 					if err := e.Store.UpdateCard(ctx, card); err != nil {
 						return nil, err
 					}
@@ -207,6 +220,7 @@ func (e *Engine) syncActive(ctx context.Context, all []*store.Card) ([]*store.Ca
 					}
 					card.Status = store.StatusDone
 					card.LastError = ""
+					clearWait(card)
 					now := e.now()
 					card.FinishedAt = &now
 					if err := e.Store.UpdateCard(ctx, card); err != nil {
@@ -273,10 +287,15 @@ func (e *Engine) handleDeadRun(ctx context.Context, card *store.Card, run *xissu
 	if card.RetryCount >= 2 {
 		card.Status = store.StatusBlocked
 		card.LastError = reason
+		card.WaitReason = reason
+		card.WaitSince = nil
 	} else {
 		card.RetryCount++
 		card.Status = store.StatusTodo
 		card.LastError = reason
+		card.WaitReason = "运行失败，等待重试: " + reason
+		now := e.now().UTC()
+		card.WaitSince = &now
 		card.XIssueRunID = 0
 	}
 	if err := e.Store.UpdateCard(ctx, card); err != nil {
@@ -294,6 +313,7 @@ func (e *Engine) dispatch(ctx context.Context, card *store.Card) (*store.Card, e
 	if !claimed {
 		return nil, errAlreadyClaimed
 	}
+	clearWait(card)
 	projectID, repoID, err := e.Client.EnsureProjectAndRepo(ctx, card.ProjectPath)
 	if err != nil {
 		// Connectivity/registration errors are transient; keep the card queued
@@ -311,7 +331,8 @@ func (e *Engine) dispatch(ctx context.Context, card *store.Card) (*store.Card, e
 			return nil, err
 		}
 	}
-	runID, err := e.Client.StartRun(ctx, card.XIssueIssueID, coder.Agent, coder.Model, BuildPrompt(card))
+	files, lines := e.diffBudget(card)
+	runID, err := e.Client.StartRun(ctx, card.XIssueIssueID, coder.Agent, coder.Model, BuildPrompt(card, files, lines))
 	if err != nil {
 		e.failDispatch(ctx, card, err.Error(), true)
 		return nil, err
@@ -341,6 +362,14 @@ func (e *Engine) failDispatch(ctx context.Context, card *store.Card, reason stri
 	card.StartedAt = nil
 	if count && card.RetryCount >= 2 {
 		card.Status = store.StatusBlocked
+		card.WaitReason = reason
+		card.WaitSince = nil
+	} else {
+		card.WaitReason = "派发失败，等待重试: " + reason
+		if card.WaitSince == nil {
+			now := e.now().UTC()
+			card.WaitSince = &now
+		}
 	}
 	card.LastError = reason
 	if err := e.Store.UpdateCard(ctx, card); err != nil {
@@ -350,9 +379,9 @@ func (e *Engine) failDispatch(ctx context.Context, card *store.Card, reason stri
 }
 
 // BuildPrompt renders the compact execution prompt (under 500 characters).
-func BuildPrompt(card *store.Card) string {
-	return fmt.Sprintf("目标: %s\n禁区: %s\n验收: %s\ntouches: %s\n只修改 touches 内文件；不要执行看板流转或合并命令。",
-		card.Goal, card.OutOfScope, card.VerifyCmd, strings.Join(card.Touches, ", "))
+func BuildPrompt(card *store.Card, maxFiles, maxLines int) string {
+	return fmt.Sprintf("目标: %s\n禁区: %s\n验收: %s\ntouches: %s\n预算: 最多 %d 个文件 / %d 行改动；超出会被门禁打回。\n只修改 touches 内文件；不要执行看板流转或合并命令。",
+		card.Goal, card.OutOfScope, card.VerifyCmd, strings.Join(card.Touches, ", "), maxFiles, maxLines)
 }
 
 func sortCards(cards []*store.Card) {

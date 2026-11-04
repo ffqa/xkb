@@ -140,7 +140,7 @@ func (m Model) cardID() string {
 
 func (m Model) headerLine(width int) string {
 	active, max := m.slots()
-	head := fmt.Sprintf("xkb  Slots: %d/%d  Blocked: %d  Archived: %d", active, max, m.blocked, m.archived)
+	head := fmt.Sprintf("xkb  Slots: %d/%d  Blocked: %d  Waiting: %d  Stalled: %d  Archived: %d", active, max, m.blocked, m.waiting, m.stalled, m.archived)
 	if m.Config != nil {
 		head += "  " + m.Config.XIssueURL
 	}
@@ -319,6 +319,12 @@ func summaryOf(c *store.Card) string {
 }
 
 func finishLabel(c *store.Card) string {
+	if c.WaitReason != "" {
+		if c.WaitSince != nil {
+			return fmt.Sprintf("等待 %s · %s", stamp(c.WaitSince), c.WaitReason)
+		}
+		return "原因 " + c.WaitReason
+	}
 	return "完成 " + stamp(c.FinishedAt)
 }
 
@@ -362,8 +368,11 @@ func (m Model) detailLines() []string {
 		fmt.Sprintf("Verify: %s", card.VerifyCmd),
 		fmt.Sprintf("Exec: %s/%s   Reviewer: %s   Retry: %d", card.ExecAgent, card.ExecModel, card.ReviewAgent, card.RetryCount),
 		fmt.Sprintf("Run: %d   ReviewedSHA: %s", card.XIssueRunID, card.LastReviewedSHA),
-		"",
 	}
+	if card.WaitReason != "" {
+		lines = append(lines, fmt.Sprintf("Waiting: %s (since %s)", card.WaitReason, stamp(card.WaitSince)))
+	}
+	lines = append(lines, "")
 	addBlock := func(label, text string) {
 		lines = append(lines, label+":")
 		for _, l := range strings.Split(strings.TrimRight(text, "\n"), "\n") {

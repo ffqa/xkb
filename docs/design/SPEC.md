@@ -4,7 +4,7 @@
 
 `xkb` 是建立在 [`xissue`](../xissue/README.md) 执行底座之上的 **全局需求拆解器（Spec Splitter）+ 冲突感知调度器（Conflict-Aware Scheduler）+ 独立交叉验收官（Two-Stage Verifier）**。
 
-设计目标：在仅使用平价/中量级模型（如 `omp (with opencode)` + `devin (swe-2-high)`）的前提下，通过**小步契约拆解、0 Token 机械硬门禁、异构模型只读交叉审查、热会话增量修复**，以最低 Token 消耗达到高质量自动化并行交付。
+设计目标：在仅使用平价/中量级模型（如 `omp (with opencode)` + `devin (swe-2-high)`）的前提下，通过**微卡拆分（2~5 分钟/≤2 文件/≤120 行）、0 Token 机械硬门禁、异构模型只读交叉审查、热会话增量修复**，以最低 Token 消耗达到高质量自动化并行交付。拆解必须足够细：大卡会让单个槽位长时间被占用，也会放大审查与返工成本。
 
 ### 1.1 职责边界（做什么 vs 不做什么）
 
@@ -36,9 +36,18 @@ backlog ──(人工或 Agent 确认 ready)──> todo ──(调度器: 槽�
 卡片从 `backlog` 进入 `todo` 时，必须通过 `ValidateTodoGate(card)` 机械校验，任一不满足直接拒绝：
 1. `project_path` 必须是本机已存在的 Git 仓库目录（或在 `xissue` 中已注册的 Project）。
 2. `priority` 属于 `P0 | P1 | P2 | P3 | P4`。
-3. `touches` 非空（至少声明 1 个允许修改的相对路径前缀或 glob，如 `["internal/auth/", "cmd/main.go"]`），且不得包含 `..` 或绝对路径。
+3. `touches` 非空（至少声明 1 个允许修改的相对路径前缀或 glob，如 `["internal/auth/", "cmd/main.go"]`），且不得包含 `..` 或绝对路径；`size=small` 最多 2 条、`size=large` 最多 3 条，超出直接拒绝并提示拆卡。
 4. `verify_cmd` 非空（至少 1 条可在 Worktree 内非交互式执行的验收命令，如 `go test ./internal/auth/...`）。
 5. `goal`、`out_of_scope`、`acceptance` 均非空，且不包含 `<FILL_IN>` 或 `TODO` 占位符。
+
+### 2.2 `todo` 看护与等待原因
+
+每轮 `Scheduler.Tick` 在派发前调用看护逻辑，把“为什么这张卡还没跑”写入 `wait_reason` / `wait_since`：
+
+1. **永久缺陷**：`depends_on` 引用了不存在的卡，或依赖成环 → 直接置 `blocked`，`last_error` 给出修正建议。
+2. **暂时等待**：依赖未完成、上游 `blocked`、同项目 `touches` 冲突、槽位已满 → 保持 `todo`，记录原因；上游恢复后自动重新参与派发。
+3. **停滞标记**：等待时长超过 `todoStallMinutes`（默认 15）时，TUI/`xkb list`/`xkb_board_status` 标记 `Stalled`，不静默死在 `todo`。
+4. **自愈**：卡片被重新派发、重试、完成或重新提升时清空等待状态；残留的 `xissue_run_id`/`started_at` 会被清理。
 
 ---
 
@@ -103,8 +112,10 @@ CREATE TABLE IF NOT EXISTS cards (
     exec_model         TEXT NOT NULL DEFAULT '',
     review_agent       TEXT NOT NULL DEFAULT '',       -- 实际审查的 agent
     retry_count        INTEGER NOT NULL DEFAULT 0,     -- 被打回次数（上限 2）
-    last_reviewed_sha  TEXT NOT NULL DEFAULT '',       -- 上一轮审过的 commit SHA（用于二轮增量审查）
-    last_error         TEXT NOT NULL DEFAULT '',       -- 阻塞或打回原因摘要
+    last_reviewed_sha  TEXT NOT NULL DEFAULT '',      -- 上一轮审过的 commit SHA（用于二轮增量审查）
+    last_error         TEXT NOT NULL DEFAULT '',      -- 阻塞或打回原因摘要
+    wait_reason        TEXT NOT NULL DEFAULT '',      -- 为什么还在 todo（等待原因）
+    wait_since         DATETIME,                       -- 等待开始时间（用于 Stalled 判定）
     created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at         DATETIME,
     finished_at        DATETIME,
@@ -140,6 +151,8 @@ CREATE TABLE IF NOT EXISTS review_runs (
    - **依赖检查**：`c.DependsOn` 中的所有卡片必须处于 `done` 或 `archived` 状态；若有未完成依赖则跳过。
    - **同项目路径冲突检查**：遍历当前 `activeCards` 中同一 `project_path` 的在途卡 `a`，调用 `PathsOverlap(c.Touches, a.Touches)`：
      - 规则：规范化路径后，若任意路径存在前缀包含关系（如 `internal/` 与 `internal/auth/a.go`）或 glob 交集，则判定为冲突，跳过该候选卡 `c`。
+   - **等待原因落库**：对每张未派发的 `todo` 卡写入 `wait_reason` / `wait_since`（依赖未完成、上游 blocked、路径冲突、槽位满、上次派发失败）。
+   - **永久缺陷熔断**：依赖 ID 不存在或依赖成环时直接置 `blocked`，避免卡片永久静默；上游恢复后依赖卡自动回到可派发状态。
 4. **派发执行**：
    - 选中无冲突卡片 `c`，通过路由器决定 `(execAgent, execModel)`。
    - 调用 `xissue` REST API：
@@ -154,7 +167,8 @@ CREATE TABLE IF NOT EXISTS review_runs (
 1. **获取变更与工作区**：
    - 调用 `GET /api/runs/{runId}/changes?patch=1`（若 `xissue` 尚未升级该字段，则回退到本地 `~/.xissue/runs/run-{runId}/{repoName}` 执行 `git diff`）。
 2. **阶段 1：0 Token 机械硬门禁**：
-   - **禁区越界检查**：检查所有 변경文件 `changedFiles` 是否全部匹配 `card.Touches`。若有越界文件 `f`，立即构造打回消息：`"越界修改了禁区外文件: <f>，请立即 git checkout 还原该文件，仅允许修改: <touches>"`。
+   - **禁区越界检查**：检查所有变更文件 `changedFiles` 是否全部匹配 `card.Touches`。若有越界文件 `f`，立即构造打回消息：`"越界修改了禁区外文件: <f>，请立即 git checkout 还原该文件，仅允许修改: <touches>"`。
+   - **规模预算**：`small` 默认 2 文件 / 120 行，`large` 默认 4 文件 / 300 行；超限直接打回并提示拆卡，不再运行 `verify_cmd`，避免大卡长时间占用槽位。
    - **验收命令实测**：在 `worktreePath` 下通过 `sh -c <card.VerifyCmd>` 执行验收（超时默认 3 分钟）。若退出码 `!= 0`，截取末尾 80 行报错输出。
    - **阶段 1 打回处置**：若越界或命令失败：
      - 若 `card.RetryCount >= 2`：标记 `card.Status = 'blocked'`，写入 `last_error`，取消/关闭热会话，释放槽位。

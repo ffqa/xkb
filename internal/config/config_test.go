@@ -18,6 +18,9 @@ func TestLoadCreatesDefaults(t *testing.T) {
 	if cfg.MaxConcurrent != 5 || cfg.DoneMaxCount != 20 || cfg.DoneTTLHours != 24 || cfg.RunTimeoutMinutes != 30 || !cfg.AutoUpdate {
 		t.Fatalf("defaults: %+v", cfg)
 	}
+	if cfg.SmallMaxTouches != 2 || cfg.LargeMaxTouches != 3 || cfg.SmallMaxDiffLines != 120 || cfg.TodoStallMinutes != 15 {
+		t.Fatalf("scope defaults: %+v", cfg)
+	}
 	if cfg.SmallExecAgent.Agent != "omp" || cfg.LargeExecAgent.Agent != "devin" {
 		t.Fatalf("routes: %+v %+v", cfg.SmallExecAgent, cfg.LargeExecAgent)
 	}

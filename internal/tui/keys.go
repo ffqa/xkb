@@ -285,11 +285,17 @@ func (m *Model) toggleTodo() {
 	}
 	switch card.Status {
 	case store.StatusBacklog:
-		if err := gate.ValidateTodoGate(card); err != nil {
+		limits := gate.DefaultLimits()
+		if m.Config != nil {
+			limits = m.Config.GateLimits()
+		}
+		if err := gate.ValidateTodoGateWithLimits(card, limits); err != nil {
 			m.message = "门禁拒绝: " + err.Error()
 			return
 		}
 		card.Status = store.StatusTodo
+		card.WaitReason = ""
+		card.WaitSince = nil
 		m.message = card.ID + " -> Todo"
 	case store.StatusTodo:
 		card.Status = store.StatusBacklog
@@ -331,6 +337,8 @@ func (m *Model) reopenSelected() bool {
 	card.XIssueRunID = 0
 	card.StartedAt = nil
 	card.FinishedAt = nil
+	card.WaitReason = ""
+	card.WaitSince = nil
 	if err := m.Store.UpdateCard(context.Background(), card); err != nil {
 		m.message = err.Error()
 		return true
@@ -353,6 +361,8 @@ func (m *Model) retryBlocked() {
 		c.LastError = ""
 		c.LastReviewedSHA = ""
 		c.XIssueRunID = 0
+		c.WaitReason = ""
+		c.WaitSince = nil
 		if err := m.Store.UpdateCard(ctx, c); err != nil {
 			m.message = err.Error()
 			return
